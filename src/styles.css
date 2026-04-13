@@ -1,0 +1,470 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #1e1e1e;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f3f3f3;
+  --border: #e5e5e5;
+  --text: #1f1f1f;
+  --muted: #616161;
+  --accent: #0f6cbd;
+  --ok: #107c10;
+  --warn: #9d5d00;
+  --error: #c50f1f;
+
+  display: grid;
+  grid-template-columns: minmax(260px, 330px) 1fr;
+  gap: 14px;
+  min-height: 100vh;
+  padding: 14px;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 14% 0%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 42%),
+    radial-gradient(circle at 86% 12%, color-mix(in srgb, var(--accent) 6%, transparent) 0%, transparent 36%),
+    var(--bg);
+}
+
+.app-shell.theme-light {
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f3f3f3;
+  --border: #e5e5e5;
+  --text: #1f1f1f;
+  --muted: #616161;
+  --accent: #0f6cbd;
+  --ok: #107c10;
+  --warn: #9d5d00;
+  --error: #c50f1f;
+}
+
+.app-shell.theme-dark {
+  --bg: #1e1e1e;
+  --panel: #252526;
+  --panel-2: #2d2d30;
+  --border: #3c3c3c;
+  --text: #d4d4d4;
+  --muted: #9e9e9e;
+  --accent: #3794ff;
+  --ok: #4ec9b0;
+  --warn: #d7ba7d;
+  --error: #f48771;
+}
+
+.left-column,
+.right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.panel,
+.chat-panel,
+.composer {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+}
+
+.panel {
+  padding: 12px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+}
+
+.feed-list,
+.docs-list,
+.chat-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.feed-item,
+.doc-card {
+  background: color-mix(in srgb, var(--panel) 90%, black 10%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px;
+}
+
+.feed-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.9rem;
+}
+
+.status-running {
+  border-left: 3px solid var(--warn);
+}
+
+.status-success {
+  border-left: 3px solid var(--ok);
+}
+
+.status-error {
+  border-left: 3px solid var(--error);
+}
+
+.doc-card a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.doc-card p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: all 160ms ease;
+}
+
+.brand-header h1 {
+  margin: 0;
+  font-size: 1.45rem;
+}
+
+.brand-header p {
+  margin: 3px 0 0;
+  color: var(--muted);
+}
+
+.top-block {
+  padding: 10px 12px;
+}
+
+.top-block-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.top-block.compact .brand-header h1 {
+  font-size: 1.1rem;
+}
+
+.top-block.compact .brand-header p {
+  font-size: 0.85rem;
+}
+
+.hal-logo {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+}
+
+.top-block.compact .hal-logo {
+  width: 34px;
+  height: 34px;
+}
+
+.chip-row {
+  padding: 8px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.health-chip {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  background: color-mix(in srgb, var(--panel) 93%, black 7%);
+}
+
+.health-chip.product {
+  border-style: solid;
+}
+
+.health-chip.ok {
+  color: var(--ok);
+}
+
+.health-chip.warn {
+  color: var(--warn);
+}
+
+.health-chip.neutral {
+  color: var(--muted);
+}
+
+.status-dot {
+  font-size: 0.65rem;
+}
+
+.chip-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chip-link:hover {
+  color: var(--accent);
+}
+
+.health-chip-popover {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  min-width: 280px;
+  max-width: 420px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 88%, black 12%);
+  color: var(--text);
+  font-size: 0.76rem;
+  line-height: 1.3;
+  white-space: pre-line;
+  display: none;
+  z-index: 20;
+}
+
+.health-chip:hover .health-chip-popover {
+  display: block;
+}
+
+.popover-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.popover-state {
+  font-weight: 600;
+}
+
+.popover-state.running {
+  color: var(--ok);
+}
+
+.popover-state.not-deployed,
+.popover-state.unknown {
+  color: var(--muted);
+}
+
+.popover-feature {
+  padding-left: 10px;
+}
+
+.health-chip.product-running {
+  color: var(--ok);
+}
+
+.health-chip.product-not-deployed,
+.health-chip.product-unknown {
+  color: var(--muted);
+}
+
+.chat-panel {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  min-height: 280px;
+}
+
+.empty-chat {
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.chat-msg {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 86%;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  border-bottom-left-radius: 6px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--panel) 92%, black 8%);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.chat-msg.user {
+  align-self: flex-end;
+  max-width: 76%;
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  border-bottom-left-radius: 18px;
+  border-bottom-right-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
+}
+
+.chat-msg.assistant {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+
+.chat-msg.in-progress {
+  opacity: 0.85;
+}
+
+.thinking-inline {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.msg-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.msg-markdown {
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.msg-markdown p,
+.msg-markdown ul,
+.msg-markdown ol {
+  margin: 0 0 10px;
+}
+
+.msg-markdown p:last-child,
+.msg-markdown ul:last-child,
+.msg-markdown ol:last-child {
+  margin-bottom: 0;
+}
+
+.msg-markdown a {
+  color: var(--accent);
+}
+
+.msg-markdown code {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  background: color-mix(in srgb, var(--panel) 75%, black 25%);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.msg-markdown pre {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 70%, black 30%);
+  overflow: auto;
+}
+
+.msg-markdown pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.composer {
+  padding: 10px;
+}
+
+.composer textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 82%, black 18%);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px;
+  resize: vertical;
+  min-height: 70px;
+  font: inherit;
+}
+
+.composer-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+button {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-2) 82%, black 18%);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.theme-switcher-inline {
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.theme-switcher-inline a {
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.theme-switcher-inline a.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .top-block-main {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .chat-msg,
+  .chat-msg.user {
+    max-width: 94%;
+  }
+}

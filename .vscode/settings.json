@@ -1,0 +1,12 @@
+{
+  "chat.tools.terminal.autoApprove": {
+    "/^cp hal_logo\\.png public/hal_logo\\.png$/": {
+      "approve": true,
+      "matchCommandLine": true
+    },
+    "/^npm install$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
+}
