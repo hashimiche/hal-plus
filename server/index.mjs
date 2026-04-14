@@ -1,6 +1,17 @@
 import express from "express";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import {
+  buildBehaviorCatalogSummary,
+  buildBehaviorPromptSupplement,
+  collectBehaviorResources,
+  resolveBehaviorContext
+} from "./behavior-registry.mjs";
+import { buildGroundingPromptSupplement, gatherBehaviorGrounding } from "./behavior-grounding.mjs";
+import { createHalExecutableResolver } from "./hal-exec.mjs";
+import { createHalMcpClient } from "./hal-mcp-client.mjs";
+import { createPolicyEngine } from "./policy-engine.mjs";
+import { deterministicIntentResponse } from "./deterministic-engine.mjs";
+import { baselineProductsToUi, getOllamaRuntime, lokiStateFromBaseline } from "./runtime-status.mjs";
+import { streamSSESections, streamSSEText, proxyOllamaStreamToSSE } from "./sse.mjs";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -10,212 +21,100 @@ const HOST = process.env.API_HOST || "127.0.0.1";
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4";
 const OLLAMA_CONTEXT_WINDOW = Number(process.env.OLLAMA_CONTEXT_WINDOW || 32768);
-const execFileAsync = promisify(execFile);
 const POLICY_CACHE_TTL_MS = Number(process.env.HAL_POLICY_CACHE_TTL_MS || 30000);
-const DEFAULT_POLICY = {
-  policy_version: "fallback-1",
-  contract_version: "fallback-1",
-  profile: "strict",
-  answer_policy: {
-    mode: "hal_first",
-    disallow_unverified_claims: true,
-    disallow_non_hal_primary_paths: true,
-    include_verification_commands: true,
-    include_official_docs: true
-  },
-  tool_policy: {
-    required_prefetch_tools: ["hal_status_baseline", "get_capabilities", "validate_command"],
-    on_uncertain_then_call: ["validate_command", "get_help_for_topic"],
-    fallback: {
-      mode: "fail_closed",
-      allow_answer: false,
-      message: "HAL MCP policy unavailable; run hal mcp status and retry."
-    }
-  },
-  recommended_bootstrap: ["hal mcp status", "hal status", "hal --help"],
-  source: "local-fallback"
-};
+const resolveHalExecutable = createHalExecutableResolver();
+const halMcpClient = createHalMcpClient(resolveHalExecutable);
+const { getRuntimePolicy, buildSystemPrompt, lastUserPrompt } = createPolicyEngine(halMcpClient, POLICY_CACHE_TTL_MS);
 
-let policyCache = {
-  expiresAt: 0,
-  value: DEFAULT_POLICY
-};
+async function callMcpWithFallback(primaryTool, fallbackTools, args = {}) {
+  const primary = await halMcpClient.callTool(primaryTool, args);
+  const primaryCode = String(primary?.structuredContent?.code || "").toLowerCase();
+  const primaryMessage = String(primary?.structuredContent?.message || "").toLowerCase();
+  if (!primary?.isError || !(primaryCode === "parse_error" && primaryMessage.includes("unknown tool"))) {
+    return primary;
+  }
+
+  for (const fallbackTool of fallbackTools || []) {
+    const fallback = await halMcpClient.callTool(fallbackTool, args);
+    if (!fallback?.isError) {
+      return fallback;
+    }
+  }
+
+  return primary;
+}
+
+async function rankDocsForPrompt(prompt, context) {
+  const resources = collectBehaviorResources(context).slice(0, 10);
+  if (!prompt || resources.length === 0) {
+    return [];
+  }
+
+  const promptPayload = resources.map((resource, index) => ({
+    id: String(index + 1),
+    title: resource.title,
+    href: resource.href,
+    description: resource.description || "",
+    kind: resource.kind || "guide"
+  }));
+
+  try {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        stream: false,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Select the most relevant documentation for the user's HAL question. Prefer precise subtopic matches over broad product homepages. Return strict JSON only: {\"selected_ids\":[\"1\",\"2\"],\"reason\":\"...\"}. Select zero to four ids."
+          },
+          {
+            role: "user",
+            content: JSON.stringify({ question: prompt, candidates: promptPayload })
+          }
+        ],
+        options: { temperature: 0.1 }
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama docs ranking failed with ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const content = String(payload?.message?.content || "").trim();
+    const jsonStart = content.indexOf("{");
+    const jsonEnd = content.lastIndexOf("}");
+    const parsed = JSON.parse(jsonStart >= 0 && jsonEnd >= jsonStart ? content.slice(jsonStart, jsonEnd + 1) : content);
+    const selectedIds = Array.isArray(parsed?.selected_ids) ? parsed.selected_ids.map((value) => String(value)) : [];
+    const selected = promptPayload.filter((item) => selectedIds.includes(item.id));
+    return selected.length > 0 ? selected : promptPayload.slice(0, 2);
+  } catch {
+    return promptPayload.slice(0, 2);
+  }
+}
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, model: OLLAMA_MODEL, ollama: OLLAMA_BASE_URL });
 });
 
-async function runHal(args) {
-  const { stdout, stderr } = await execFileAsync("hal", args, {
-    timeout: 15000,
-    maxBuffer: 1024 * 1024
-  });
-  return `${stdout || ""}${stderr || ""}`;
-}
-
-function normalizePolicy(input) {
-  if (!input || typeof input !== "object") {
-    return DEFAULT_POLICY;
-  }
-
-  const merged = {
-    ...DEFAULT_POLICY,
-    ...input,
-    answer_policy: {
-      ...DEFAULT_POLICY.answer_policy,
-      ...(input.answer_policy || {})
-    },
-    tool_policy: {
-      ...DEFAULT_POLICY.tool_policy,
-      ...(input.tool_policy || {}),
-      fallback: {
-        ...DEFAULT_POLICY.tool_policy.fallback,
-        ...((input.tool_policy && input.tool_policy.fallback) || {})
-      }
-    }
-  };
-
-  return merged;
-}
-
-async function getRuntimePolicy() {
-  const now = Date.now();
-  if (policyCache.expiresAt > now && policyCache.value) {
-    return policyCache.value;
-  }
-
-  try {
-    const raw = await runHal(["mcp", "policy", "--json", "--profile", "strict"]);
-    const trimmed = raw.trim();
-    const jsonStart = trimmed.indexOf("{");
-    const jsonEnd = trimmed.lastIndexOf("}");
-    const jsonSlice = jsonStart >= 0 && jsonEnd >= jsonStart ? trimmed.slice(jsonStart, jsonEnd + 1) : trimmed;
-    const parsed = JSON.parse(jsonSlice);
-    const normalized = normalizePolicy({ ...parsed, source: "hal-mcp-runtime" });
-    policyCache = { value: normalized, expiresAt: now + POLICY_CACHE_TTL_MS };
-    return normalized;
-  } catch {
-    const fallback = normalizePolicy(DEFAULT_POLICY);
-    policyCache = { value: fallback, expiresAt: now + POLICY_CACHE_TTL_MS };
-    return fallback;
-  }
-}
-
-function buildSystemPrompt(policy) {
-  const requiredTools = Array.isArray(policy?.tool_policy?.required_prefetch_tools)
-    ? policy.tool_policy.required_prefetch_tools.join(", ")
-    : "hal_status_baseline, get_capabilities, validate_command";
-
-  return [
-    "You are HAL Plus, an educational HashiCorp Academy Labs assistant.",
-    "Follow HAL runtime policy as source of truth.",
-    `Policy source: ${policy.source || "unknown"}.`,
-    `Policy profile: ${policy.profile || "strict"}.`,
-    `Policy version: ${policy.policy_version || "unknown"}.`,
-    `Contract version: ${policy.contract_version || "unknown"}.`,
-    "Always answer in this structure:",
-    "1) Status baseline (or explicit unknown)",
-    "2) HAL-first command path",
-    "3) Official documentation links",
-    "4) Verification commands",
-    `Mandatory MCP prefetch tools before operational claims: ${requiredTools}.`,
-    "Do not fabricate product state, versions, or endpoints.",
-    "If runtime evidence is missing, say unknown and ask for or run checks first.",
-    "Use markdown with runnable bash code blocks when relevant."
-  ].join(" ");
-}
-
-function parseHalStatus(raw) {
-  const lines = raw.split("\n");
-  const products = [];
-  let current = null;
-
-  const stripAnsi = (value) => value.replace(/\u001b\[[0-9;]*m/g, "");
-
-  for (const line of lines) {
-    const cleanLine = stripAnsi(line).trimEnd();
-    const lineNoIcon = cleanLine.replace(/^[🟢⚪🟡]\s+/, "");
-
-    let stateRaw = "";
-    let stateIdx = lineNoIcon.indexOf("Running");
-    if (stateIdx >= 0) {
-      stateRaw = "Running";
-    } else {
-      stateIdx = lineNoIcon.indexOf("Not Deployed");
-      if (stateIdx >= 0) {
-        stateRaw = "Not Deployed";
-      }
-    }
-
-    if (stateIdx >= 0) {
-      const name = lineNoIcon.slice(0, stateIdx).trim().replace(/^[^A-Za-z0-9]+/, "");
-      const tail = lineNoIcon.slice(stateIdx + stateRaw.length).trim();
-      const tailCols = tail.split(/\s{2,}/).map((v) => v.trim()).filter(Boolean);
-      const endpointRaw = tailCols[0] || "-";
-      const versionRaw = tailCols[1] || "-";
-
-      current = {
-        name,
-        state: stateRaw === "Running" ? "running" : "not-deployed",
-        endpoint: endpointRaw,
-        version: versionRaw,
-        features: []
-      };
-      products.push(current);
-      continue;
-    }
-
-    const featureMatch = cleanLine.match(/↳\s+([A-Za-z0-9_-]+)\s+(.+)$/);
-    if (featureMatch && current) {
-      const [, key, value] = featureMatch;
-      current.features.push(`${key.trim()}:${value.trim()}`);
-    }
-  }
-
-  return products;
-}
-
-async function getOllamaRuntime() {
-  try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`);
-    if (!response.ok) {
-      return { ok: false, detail: `${OLLAMA_BASE_URL} · not reachable` };
-    }
-    const data = await response.json();
-    const hasModel = Array.isArray(data?.models)
-      ? data.models.some((m) => typeof m?.name === "string" && m.name.startsWith(OLLAMA_MODEL))
-      : false;
-    return {
-      ok: hasModel,
-      model: OLLAMA_MODEL,
-      contextWindow: OLLAMA_CONTEXT_WINDOW,
-      detail: hasModel
-        ? `${OLLAMA_BASE_URL} · model ${OLLAMA_MODEL} ready`
-        : `${OLLAMA_BASE_URL} · model ${OLLAMA_MODEL} missing`
-    };
-  } catch {
-    return {
-      ok: false,
-      model: OLLAMA_MODEL,
-      contextWindow: OLLAMA_CONTEXT_WINDOW,
-      detail: `${OLLAMA_BASE_URL} · not reachable`
-    };
-  }
-}
-
 app.get("/api/status", async (_req, res) => {
   try {
-    const [halStatusRaw, halMcpRaw, llmRuntime] = await Promise.all([
-      runHal(["status"]),
-      runHal(["mcp", "status"]),
-      getOllamaRuntime()
+    const [baseline, capabilities, llmRuntime] = await Promise.all([
+      callMcpWithFallback("hal_status_baseline", ["get_runtime_status"], {}),
+      halMcpClient.callTool("get_capabilities", {}),
+      getOllamaRuntime(OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_CONTEXT_WINDOW)
     ]);
-
-    const products = parseHalStatus(halStatusRaw);
-    const obs = products.find((p) => p.name.toLowerCase() === "observability");
-    const lokiReady = !!obs && obs.features.some((f) => f.startsWith("loki:enabled"));
-
-    const mcpOk = halMcpRaw.includes("Config file:  ✅ Present") && halMcpRaw.includes("Managed bin:  ✅ Present");
+    const runtime = baseline?.structuredContent?.data?.runtime || null;
+    const products = baselineProductsToUi(runtime);
+    const lokiReady = lokiStateFromBaseline(runtime);
+    const capabilityCount = Array.isArray(capabilities?.structuredContent?.data?.actions)
+      ? capabilities.structuredContent.data.actions.length
+      : 0;
+    const mcpOk = !baseline?.isError && !capabilities?.isError;
 
     res.json({
       runtime: {
@@ -228,7 +127,9 @@ app.get("/api/status", async (_req, res) => {
         llm: llmRuntime,
         halMcp: {
           ok: mcpOk,
-          detail: mcpOk ? "hal mcp status · config and managed binary present" : "hal mcp status · setup incomplete"
+          detail: mcpOk
+            ? `HAL MCP runtime tools ready (${capabilityCount} actions discovered)`
+            : "HAL MCP runtime tools unavailable"
         }
       },
       products
@@ -247,11 +148,41 @@ app.get("/api/status", async (_req, res) => {
   }
 });
 
+app.get("/api/catalog", (_req, res) => {
+  try {
+    res.json(buildBehaviorCatalogSummary());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown catalog error";
+    res.status(500).json({ error: message, products: [] });
+  }
+});
+
+app.post("/api/docs", async (req, res) => {
+  try {
+    const prompt = typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
+    const context = resolveBehaviorContext(prompt);
+    const docs = await rankDocsForPrompt(prompt, context);
+    res.json({ docs });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown docs error";
+    res.status(500).json({ error: message, docs: [] });
+  }
+});
+
 app.post("/api/chat", async (req, res) => {
   try {
     const inputMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
     const runtimePolicy = await getRuntimePolicy();
-    const systemPrompt = buildSystemPrompt(runtimePolicy);
+
+    const prompt = lastUserPrompt(inputMessages);
+    const behaviorContext = resolveBehaviorContext(prompt);
+    const behaviorGrounding = await gatherBehaviorGrounding(behaviorContext, halMcpClient).catch(() => null);
+    const systemPrompt = buildSystemPrompt(
+      runtimePolicy,
+      [buildBehaviorPromptSupplement(behaviorContext), buildGroundingPromptSupplement(behaviorGrounding)]
+        .filter(Boolean)
+        .join("\n\n")
+    );
 
     const messages = [
       { role: "system", content: systemPrompt },
@@ -259,6 +190,12 @@ app.post("/api/chat", async (req, res) => {
         .filter((m) => typeof m?.role === "string" && typeof m?.content === "string")
         .map((m) => ({ role: m.role, content: m.content }))
     ];
+
+    const deterministicReply = await deterministicIntentResponse(prompt, behaviorContext, behaviorGrounding);
+    if (deterministicReply) {
+      await streamSSESections(res, deterministicReply, { delayMs: 80 });
+      return;
+    }
 
     const ollamaResponse = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: "POST",
@@ -279,52 +216,7 @@ app.post("/api/chat", async (req, res) => {
       return;
     }
 
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-
-    const reader = ollamaResponse.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          continue;
-        }
-
-        let parsed;
-        try {
-          parsed = JSON.parse(trimmed);
-        } catch {
-          continue;
-        }
-
-        const chunk = parsed?.message?.content || "";
-        if (chunk) {
-          res.write(`data: ${JSON.stringify({ type: "chunk", content: chunk })}\n\n`);
-        }
-
-        if (parsed?.done) {
-          res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-          res.end();
-          return;
-        }
-      }
-    }
-
-    res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
-    res.end();
+    await proxyOllamaStreamToSSE(res, ollamaResponse);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     res.write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);

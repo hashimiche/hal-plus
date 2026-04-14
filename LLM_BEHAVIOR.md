@@ -1,0 +1,54 @@
+# HAL Plus Behavior Contract
+
+Purpose
+- Keep HAL Plus responses grounded, HAL-first, and educational.
+- Keep behavior stable while implementation stays modular.
+
+Ownership split
+- HAL Plus owns routing, response structure, educational framing, and product workflow logic.
+- HAL MCP owns live field truth for the user's installed HAL version: current commands, flags, endpoints, runtime state, verification paths, and version-sensitive capability data.
+- Behavior packs in HAL Plus may keep stable product knowledge, but runtime or version-sensitive claims must prefer HAL MCP.
+- If HAL MCP is unavailable, HAL Plus may still answer with stable product logic, but it must mark live runtime facts as unknown and show the HAL/MCP checks needed to confirm them.
+- New product work should default to this split unless there is a strong reason to keep a fact entirely inside HAL Plus.
+- HAL Plus website runtime views (status/health/catalog grounding) must use HAL MCP tool calls and structured responses, not parsed output from `hal status`.
+- MCP compatibility should be handled via tool fallbacks (for example, `hal_status_baseline` -> `get_runtime_status`) rather than direct CLI status execution.
+
+UX contract
+- Keep the main UI compact and chat-first: top status row, scrollable chat area, then prompt composer anchored at the bottom.
+- The user should not need to scroll past product marketing, large playbooks, or long side panels to ask a question.
+- Left-side UI should focus on relevant documentation only, and it should appear only after a question is asked and only when the prompt intent actually benefits from docs.
+- Do not show generic product playbooks, curated link dumps, or lab surfaces by default.
+- Documentation cards should be ranked by current prompt relevance, preferably via LLM selection over behavior-pack resources so subtopic questions do not collapse to broad product homepages.
+- Documentation reveal should feel progressive and light, with a soft fade or slide rather than an abrupt panel swap.
+- Status chips must stay lightweight; compact detail overlays are acceptable for both product chips and runtime chips such as MCP and token/context, but they must remain small, hover-adjacent, and never cover the main chat/composer area.
+- Overlay structure should be consistent across chip types: short heading, one or two factual lines, then compact tags when useful.
+- Suggestion chips are useful and should remain concise; when multiple products exist, rotate or randomize suggestions across products instead of pinning one product forever.
+- User-facing answers must stay concise by default. Include endpoints, lab surfaces, or extra links only when the user explicitly asks for them.
+
+Response contract (operational prompts)
+1. Status baseline first.
+2. HAL-first command path.
+3. Verification commands.
+4. One official docs link by default.
+5. Short notes only when they materially help.
+
+Deterministic routing policy
+- If prompt is operational and matches a known workflow, use deterministic engine output.
+- If no workflow matches, use model path with runtime policy prompt.
+- Never invent commands or endpoints.
+
+Mandatory guardrails
+- Prefer HAL commands before raw commands when possible.
+- For CSI workflows, include Enterprise prerequisite checks.
+- If runtime evidence is missing, say unknown and show checks.
+- For product answers, prefer HAL MCP outputs over hardcoded facts whenever the MCP tool surface can provide the same information.
+
+Implementation map
+- HAL execution and binary resolution: server/hal-exec.mjs
+- HAL MCP stdio client and tool calls: server/hal-mcp-client.mjs
+- MCP-backed behavior grounding: server/behavior-grounding.mjs
+- Runtime policy and system prompt: server/policy-engine.mjs
+- Deterministic workflows and educational output: server/deterministic-engine.mjs
+- Runtime status parsing: server/runtime-status.mjs
+- SSE output handling: server/sse.mjs
+- Route wiring only: server/index.mjs

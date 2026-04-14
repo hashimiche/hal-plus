@@ -11,37 +11,6 @@ type Message = {
   ts: string;
 };
 
-type FeedItem = {
-  id: string;
-  label: string;
-  status: "running" | "success" | "error";
-  duration: string;
-};
-
-const initialFeed: FeedItem[] = [
-  { id: "1", label: "hal status", status: "success", duration: "210ms" },
-  { id: "2", label: "vault health", status: "running", duration: "-" },
-  { id: "3", label: "docs suggest", status: "success", duration: "48ms" }
-];
-
-const initialDocs = [
-  {
-    title: "HAL CLI Repository",
-    description: "Reference commands and workflows used by the HAL interface.",
-    href: "https://github.com/hashimiche/hal"
-  },
-  {
-    title: "Vault Secrets Operator (VSO)",
-    description: "Official VSO docs, including deployment and Kubernetes integration.",
-    href: "https://developer.hashicorp.com/vault/docs/platform/k8s/vso"
-  },
-  {
-    title: "Vault CSI Provider",
-    description: "Official guide for Vault CSI provider and required prerequisites.",
-    href: "https://developer.hashicorp.com/vault/docs/platform/k8s/csi"
-  }
-];
-
 type ThemeVersion = {
   className: string;
   label: string;
@@ -49,15 +18,6 @@ type ThemeVersion = {
 };
 
 type HealthState = "ok" | "warn" | "neutral";
-
-type HealthChip = {
-  id: string;
-  label: string;
-  state: HealthState;
-  detail: string;
-  kind?: "runtime" | "product";
-  product?: HalProduct;
-};
 
 type HalProduct = {
   name: string;
@@ -76,9 +36,52 @@ type LiveStatus = {
   products: HalProduct[];
 };
 
+type HealthChip = {
+  id: string;
+  label: string;
+  state: HealthState;
+  detail: string;
+  kind?: "runtime" | "product";
+  product?: HalProduct;
+};
+
+type CatalogLink = {
+  title: string;
+  href: string;
+  kind?: string;
+  description?: string;
+};
+
+type CatalogSubcommand = {
+  id: string;
+  title: string;
+  summary: string;
+  subcommand: string;
+  focusBullets: string[];
+  samplePrompts: string[];
+  matchTerms: string[];
+};
+
+type CatalogProduct = {
+  id: string;
+  label: string;
+  title: string;
+  summary: string;
+  focusBullets: string[];
+  samplePrompts: string[];
+  matchTerms: string[];
+  resources: CatalogLink[];
+  uiLinks: CatalogLink[];
+  subcommands: CatalogSubcommand[];
+};
+
+type BehaviorCatalog = {
+  products: CatalogProduct[];
+};
+
 const themeVersions: ThemeVersion[] = [
-  { className: "theme-light", label: "Light", path: "/" },
-  { className: "theme-dark", label: "Dark", path: "/dark" }
+  { className: "theme-light", label: "Studio", path: "/" },
+  { className: "theme-dark", label: "After Hours", path: "/dark" }
 ];
 
 const defaultProducts: HalProduct[] = [
@@ -102,22 +105,114 @@ function isHttpUrl(value: string): boolean {
   return /^https?:\/\//.test(value.trim());
 }
 
+function scoreTerms(haystack: string, terms: string[]): number {
+  const lower = haystack.toLowerCase();
+  return terms.reduce((score, term) => (term && lower.includes(term.toLowerCase()) ? score + 1 : score), 0);
+}
+
+function runtimeProductToCatalogId(productName: string): string | null {
+  const normalized = productName.toLowerCase();
+  if (normalized === "tfe") {
+    return "terraform";
+  }
+
+  if (normalized === "observability") {
+    return "observability";
+  }
+
+  return normalized;
+}
+
+function uniqueStrings(items: string[]): string[] {
+  return [...new Set(items.filter(Boolean))];
+}
+
+function uniqueLinks(items: CatalogLink[]): CatalogLink[] {
+  const seen = new Set<string>();
+  const result: CatalogLink[] = [];
+
+  for (const item of items) {
+    if (!item?.href || seen.has(item.href)) {
+      continue;
+    }
+    seen.add(item.href);
+    result.push(item);
+  }
+
+  return result;
+}
+
+function scoreDocLink(prompt: string, product: CatalogProduct | null, link: CatalogLink): number {
+  const haystack = [link.title, link.description, link.kind].filter(Boolean).join(" ").toLowerCase();
+  const promptLower = String(prompt || "").toLowerCase();
+  const productTerms = product
+    ? [product.label, product.title, ...(product.matchTerms || []), ...product.subcommands.flatMap((subcommand) => subcommand.matchTerms || [])]
+    : [];
+
+  let score = 0;
+  if (link.kind === "official") {
+    score += 10;
+  }
+  score += scoreTerms(haystack, productTerms.filter(Boolean));
+  score += scoreTerms(haystack, promptLower.split(/\W+/).filter(Boolean));
+  return score;
+}
+
+function seededScore(value: string, seed: number): number {
+  let hash = seed || 1;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 33 + value.charCodeAt(i)) % 2147483647;
+  }
+  return hash;
+}
+
+function shouldShowDocsForPrompt(prompt: string): boolean {
+  const lower = String(prompt || "").toLowerCase();
+  if (!lower.trim()) {
+    return false;
+  }
+
+  const docIntent = ["how", "deploy", "setup", "configure", "tutorial", "guide", "workflow", "learn", "troubleshoot", "fix"];
+  const statusOnlyIntent = ["status", "running", "up", "health", "local instance", "is my", "is tfe", "check"];
+
+  const hasDocIntent = docIntent.some((term) => lower.includes(term));
+  const hasStatusIntent = statusOnlyIntent.some((term) => lower.includes(term));
+
+  if (hasDocIntent) {
+    return true;
+  }
+
+  if (hasStatusIntent) {
+    return false;
+  }
+
+  return false;
+}
+
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const [catalog, setCatalog] = useState<BehaviorCatalog | null>(null);
+  const [docSuggestions, setDocSuggestions] = useState<CatalogLink[]>([]);
+  const [suggestionSeed, setSuggestionSeed] = useState(() => Math.floor(Math.random() * 100000));
   const formRef = useRef<HTMLFormElement>(null);
   const theme = getThemeFromPath(window.location.pathname);
 
-  const compact = messages.length > 0;
-
-  const runtimeLabel = useMemo(() => (isSending ? "LLM: streaming" : "LLM: ready"), [isSending]);
-
   const estimatedTokens = useMemo(() => {
-    const chars = messages.reduce((sum, msg) => sum + msg.text.length, 0) + input.length;
+    const chars = messages.reduce((sum, message) => sum + message.text.length, 0) + input.length;
     return Math.max(0, Math.ceil(chars / 4));
   }, [input.length, messages]);
+
+  const latestUserPrompt = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "user") {
+        return messages[index].text;
+      }
+    }
+    return "";
+  }, [messages]);
 
   const contextWindow = liveStatus?.runtime.llm.contextWindow || 32768;
   const tokenPercent = Math.min(100, Math.round((estimatedTokens / contextWindow) * 100));
@@ -138,31 +233,152 @@ export default function App() {
       }
     };
 
+    const fetchCatalog = async () => {
+      try {
+        const response = await fetch("/api/catalog");
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as BehaviorCatalog;
+        setCatalog(data);
+      } catch {
+        // Ignore catalog bootstrap errors and keep the UI functional.
+      }
+    };
+
     void fetchStatus();
+    void fetchCatalog();
+
     const interval = window.setInterval(fetchStatus, 12000);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!shouldShowDocsForPrompt(latestUserPrompt)) {
+      setDocSuggestions([]);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const fetchDocs = async () => {
+      try {
+        const response = await fetch("/api/docs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: latestUserPrompt }),
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const data = (await response.json()) as { docs?: CatalogLink[] };
+        setDocSuggestions(Array.isArray(data.docs) ? data.docs : []);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+      }
+    };
+
+    void fetchDocs();
+
+    return () => controller.abort();
+  }, [latestUserPrompt]);
+
+  const activeCatalogProduct = useMemo(() => {
+    const products = catalog?.products || [];
+    if (products.length === 0) {
+      return null;
+    }
+
+    const promptScores = products
+      .map((product) => {
+        const directScore = scoreTerms(latestUserPrompt, product.matchTerms);
+        const subcommandScore = product.subcommands.reduce(
+          (score, subcommand) => score + scoreTerms(latestUserPrompt, subcommand.matchTerms),
+          0
+        );
+
+        return {
+          product,
+          score: directScore + subcommandScore
+        };
+      })
+      .sort((left, right) => right.score - left.score);
+
+    if (promptScores[0] && promptScores[0].score > 0) {
+      return promptScores[0].product;
+    }
+
+    const runningCatalogId = displayProducts
+      .filter((product) => product.state === "running")
+      .map((product) => runtimeProductToCatalogId(product.name))
+      .find((catalogId) => catalogId && products.some((product) => product.id === catalogId));
+
+    if (runningCatalogId) {
+      return products.find((product) => product.id === runningCatalogId) || products[0];
+    }
+
+    return products.find((product) => product.id === "terraform") || products[0];
+  }, [catalog?.products, displayProducts, latestUserPrompt]);
+
+  const activeSuggestions = useMemo(() => {
+    const products = catalog?.products || [];
+    if (products.length === 0) {
+      return [];
+    }
+
+    const pool = uniqueStrings(
+      products.flatMap((product) => [
+        ...(product.samplePrompts || []),
+        ...product.subcommands.flatMap((subcommand) => subcommand.samplePrompts || [])
+      ])
+    );
+
+    return pool
+      .map((prompt) => ({ prompt, score: seededScore(prompt, suggestionSeed) }))
+      .sort((left, right) => left.score - right.score)
+      .slice(0, 5)
+      .map((entry) => entry.prompt);
+  }, [catalog?.products, suggestionSeed]);
+
+  const relevantDocs = useMemo(() => {
+    const products = catalog?.products || [];
+    if (products.length === 0) {
+      return [];
+    }
+
+    const target = activeCatalogProduct || products[0];
+    const docs = uniqueLinks(target.resources || []);
+    return docs
+      .map((doc) => ({ ...doc, score: scoreDocLink(latestUserPrompt, target, doc) }))
+      .sort((left, right) => right.score - left.score || String(left.title).localeCompare(String(right.title)))
+      .slice(0, 6);
+  }, [activeCatalogProduct, catalog?.products, latestUserPrompt]);
+
+  const visibleDocs = useMemo(() => {
+    if (!shouldShowDocsForPrompt(latestUserPrompt)) {
+      return [];
+    }
+
+    if (docSuggestions.length > 0) {
+      return docSuggestions.slice(0, 4);
+    }
+
+    return relevantDocs.filter((doc) => doc.score > 0).slice(0, 4);
+  }, [docSuggestions, latestUserPrompt, relevantDocs]);
+
+  const showDocsSidebar = visibleDocs.length > 0;
 
   const healthChips: HealthChip[] = useMemo(
     () => {
       const runtimeChips: HealthChip[] = [
         {
-          id: "loki",
-          label: "Loki",
-          state: liveStatus ? (liveStatus.runtime.loki.ok ? "ok" : "neutral") : "neutral",
-          detail: liveStatus?.runtime.loki.detail || "offline / no data",
-          kind: "runtime"
-        },
-        {
-          id: "llm",
-          label: runtimeLabel,
-          state: isSending ? "warn" : liveStatus ? (liveStatus.runtime.llm.ok ? "ok" : "neutral") : "neutral",
-          detail: liveStatus?.runtime.llm.detail || "offline / no data",
-          kind: "runtime"
-        },
-        {
           id: "hal-mcp",
-          label: "HAL MCP",
+          label: "MCP",
           state: liveStatus ? (liveStatus.runtime.halMcp.ok ? "ok" : "neutral") : "neutral",
           detail: liveStatus?.runtime.halMcp.detail || "offline / no data",
           kind: "runtime"
@@ -193,7 +409,7 @@ export default function App() {
         }
       ];
     },
-    [contextWindow, displayProducts, estimatedTokens, isSending, liveStatus, runtimeLabel, tokenPercent, tokenState]
+    [contextWindow, displayProducts, estimatedTokens, liveStatus, tokenPercent, tokenState]
   );
 
   const chipDot = (chip: HealthChip): string => {
@@ -214,6 +430,62 @@ export default function App() {
       return "◐";
     }
     return "○";
+  };
+
+  const renderChipOverlay = (chip: HealthChip) => {
+    if (chip.kind === "product" && chip.product) {
+      return (
+        <div className="chip-overlay product-overlay" role="presentation">
+          <div className="chip-overlay-head product-overlay-head">
+            <strong>{chip.product.name}</strong>
+            <span>{chip.product.state}</span>
+          </div>
+          <p>{chip.product.version && chip.product.version !== "n/a" ? `Version ${chip.product.version}` : "Version unavailable"}</p>
+          <p>{chip.product.endpoint || "No endpoint discovered"}</p>
+          {chip.product.features.length > 0 ? (
+            <div className="chip-overlay-tags product-overlay-features">
+              {chip.product.features.slice(0, 4).map((feature) => (
+                <span key={feature}>{feature}</span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    if (chip.id === "token") {
+      return (
+        <div className="chip-overlay runtime-overlay" role="presentation">
+          <div className="chip-overlay-head">
+            <strong>Context Window</strong>
+            <span>{tokenPercent}% used</span>
+          </div>
+          <p>{chip.detail}</p>
+          <div className="chip-overlay-tags">
+            <span>{liveStatus?.runtime.llm.model || "model unknown"}</span>
+            <span>{contextWindow.toLocaleString()} token window</span>
+          </div>
+        </div>
+      );
+    }
+
+    if (chip.id === "hal-mcp") {
+      return (
+        <div className="chip-overlay runtime-overlay" role="presentation">
+          <div className="chip-overlay-head">
+            <strong>HAL MCP</strong>
+            <span>{chip.state === "ok" ? "ready" : "degraded"}</span>
+          </div>
+          <p>{chip.detail}</p>
+          <div className="chip-overlay-tags">
+            <span>Grounding source</span>
+            <span>Runtime truth</span>
+          </div>
+        </div>
+      );
+    }
+
+    return null;
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -245,7 +517,7 @@ export default function App() {
     setMessages((prev) => [...prev, assistantMessage]);
 
     try {
-      const conversation = [...messages, userMessage].map((m) => ({ role: m.role, content: m.text }));
+      const conversation = [...messages, userMessage].map((message) => ({ role: message.role, content: message.text }));
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -272,9 +544,7 @@ export default function App() {
         buffer = events.pop() || "";
 
         for (const evt of events) {
-          const payloadLine = evt
-            .split("\n")
-            .find((line) => line.startsWith("data:"));
+          const payloadLine = evt.split("\n").find((line) => line.startsWith("data:"));
           if (!payloadLine) {
             continue;
           }
@@ -284,8 +554,8 @@ export default function App() {
 
           if (payload.type === "chunk" && payload.content) {
             setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === assistantId ? { ...msg, text: msg.text + payload.content } : msg
+              prev.map((message) =>
+                message.id === assistantId ? { ...message, text: message.text + payload.content } : message
               )
             );
           }
@@ -298,8 +568,8 @@ export default function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === assistantId ? { ...msg, text: `Error while contacting Ollama:\n\n${message}` } : msg
+        prev.map((entry) =>
+          entry.id === assistantId ? { ...entry, text: `Error while contacting Ollama:\n\n${message}` } : entry
         )
       );
     } finally {
@@ -311,6 +581,7 @@ export default function App() {
     setMessages([]);
     setInput("");
     setIsSending(false);
+    setSuggestionSeed(Math.floor(Math.random() * 100000));
   };
 
   const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -321,29 +592,19 @@ export default function App() {
   };
 
   return (
-    <div className={`app-shell ${theme.className}`}>
+    <div className={`app-shell ${theme.className} ${showDocsSidebar ? "has-docs" : "no-docs"}`}>
+      {showDocsSidebar ? (
       <aside className="left-column">
-        <section className="panel">
+        <section className="panel utility-panel docs-panel">
           <header className="panel-header">
-            <h2>Execution Feed</h2>
-          </header>
-          <ul className="feed-list">
-            {initialFeed.map((item) => (
-              <li key={item.id} className={`feed-item status-${item.status}`}>
-                <span className="feed-label">{item.label}</span>
-                <span className="feed-meta">{item.duration}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <section className="panel">
-          <header className="panel-header">
-            <h2>Proposed Docs</h2>
+            <span className="panel-kicker">Documentation</span>
+            <h2>Relevant Sources</h2>
+            <p>{activeCatalogProduct?.label ? `For ${activeCatalogProduct.label}` : "Based on your current question."}</p>
           </header>
           <ul className="docs-list">
-            {initialDocs.map((doc) => (
-              <li key={doc.href} className="doc-card">
+            {visibleDocs.map((doc) => (
+              <li key={doc.href} className={`doc-card ${doc === visibleDocs[0] ? "featured-doc" : ""}`}>
+                <div className="doc-kind">{doc.kind || "guide"}</div>
                 <a href={doc.href} target="_blank" rel="noreferrer">
                   {doc.title}
                 </a>
@@ -353,25 +614,23 @@ export default function App() {
           </ul>
         </section>
       </aside>
+      ) : null}
 
       <main className="right-column">
-        <header className={`top-block panel ${compact ? "compact" : "landing"}`}>
+        <header className="top-block panel compact">
           <div className="top-block-main">
             <div className="brand-header">
               <img src="/hal_logo.png" alt="HAL logo" className="hal-logo" />
               <div>
-                <h1>HAL Plus</h1>
-                <p>HashiCorp Academy Labs AI layer</p>
+                <div className="brand-kicker">academy labs operator layer</div>
+                <h1>HAL+</h1>
+                <p>MCP-grounded answers, concise by default.</p>
               </div>
             </div>
 
             <div className="theme-switcher-inline" aria-label="Theme mode">
               {themeVersions.map((version) => (
-                <a
-                  key={version.path}
-                  href={version.path}
-                  className={version.path === theme.path ? "active" : ""}
-                >
+                <a key={version.path} href={version.path} className={version.path === theme.path ? "active" : ""}>
                   {version.label}
                 </a>
               ))}
@@ -385,48 +644,19 @@ export default function App() {
                 className={`health-chip ${chip.state} ${chip.kind ?? "runtime"} ${
                   chip.kind === "product" ? `product-${chip.product?.state || "unknown"}` : ""
                 }`}
+                title={chip.kind === "product" ? `${chip.product?.state || "unknown"} · ${chip.product?.endpoint || "no endpoint"}` : chip.detail}
               >
                 <span className="status-dot" aria-hidden>
                   {chipDot(chip)}
                 </span>
                 {chip.kind === "product" && chip.product?.state === "running" && isHttpUrl(chip.product.endpoint) ? (
-                  <a
-                    className="chip-link"
-                    href={chip.product.endpoint}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={chip.product.endpoint}
-                  >
+                  <a className="chip-link" href={chip.product.endpoint} target="_blank" rel="noreferrer" title={chip.product.endpoint}>
                     {chip.label}
                   </a>
                 ) : (
                   <span>{chip.label}</span>
                 )}
-                <span className="health-chip-popover">
-                  {chip.kind === "product" && chip.product ? (
-                    <span className="popover-grid">
-                      <span className={`popover-state ${chip.product.state}`}>
-                        {chip.product.state === "running" ? "● deployed" : chip.product.state === "not-deployed" ? "○ not deployed" : "◌ no data"}
-                      </span>
-                      <span>endpoint: {chip.product.endpoint || "no data"}</span>
-                      <span>
-                        version: {chip.product.version && chip.product.version !== "-" ? chip.product.version : "unknown"}
-                      </span>
-                      <span>features:</span>
-                      {chip.product.features.length > 0 ? (
-                        chip.product.features.map((feature) => (
-                          <span key={`${chip.id}-${feature}`} className="popover-feature">
-                            {feature}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="popover-feature">- no data</span>
-                      )}
-                    </span>
-                  ) : (
-                    chip.detail
-                  )}
-                </span>
+                {renderChipOverlay(chip)}
               </div>
             ))}
           </div>
@@ -435,18 +665,25 @@ export default function App() {
         <section className="chat-panel">
           {messages.length === 0 ? (
             <div className="empty-chat">
-              Ask about a lab workflow and HAL will propose commands + official docs.
+              <p>Ask a question and HAL+ will answer with MCP-grounded commands first.</p>
+              <div className="suggestion-row">
+                {activeSuggestions.map((suggestion) => (
+                  <button key={suggestion} type="button" className="suggestion-chip" onClick={() => setInput(suggestion)}>
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             <ul className="chat-list">
               {messages.map((message) => (
                 <li key={message.id} className={`chat-msg ${message.role}`}>
                   <div className="msg-head">
-                    <strong>{message.role === "user" ? "You" : "HAL"}</strong>
+                    <strong>{message.role === "user" ? "You" : "HAL+"}</strong>
                     <span>{message.ts}</span>
                   </div>
                   {message.role === "assistant" && message.text.trim() === "" ? (
-                    <div className="thinking-inline">HAL is thinking...</div>
+                    <div className="thinking-inline">HAL+ is grounding the answer...</div>
                   ) : (
                     <div className="msg-markdown">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown>
@@ -459,16 +696,30 @@ export default function App() {
         </section>
 
         <form ref={formRef} className="composer" onSubmit={submit}>
+          <div className="composer-topline">
+            <div>
+              <span className="composer-label">Ask HAL+</span>
+              <span className="composer-note">Suggestions are sampled across available products.</span>
+            </div>
+            <div className="suggestion-row compact-row">
+              {activeSuggestions.slice(0, 3).map((suggestion) => (
+                <button key={suggestion} type="button" className="suggestion-chip" onClick={() => setInput(suggestion)}>
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleComposerKeyDown}
-            placeholder="Example: I want to setup VSO with CSI"
+            placeholder={activeSuggestions[0] || "Example: How do I deploy Vault in HAL?"}
             rows={3}
           />
           <div className="composer-actions">
             <button type="button" className="ghost" onClick={clearHistory}>
-              Clear History
+              Clear
             </button>
             <button type="submit" disabled={!input.trim() || isSending}>
               Send
