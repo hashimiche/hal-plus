@@ -276,6 +276,12 @@ body {
   font-size: 0.88rem;
 }
 
+.doc-card .doc-source {
+  margin: 6px 0 4px;
+  color: color-mix(in srgb, var(--muted) 84%, var(--accent-2));
+  font-size: 0.8rem;
+}
+
 .brand-header {
   display: flex;
   align-items: center;

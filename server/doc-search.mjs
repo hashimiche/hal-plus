@@ -126,6 +126,23 @@ function stripHtml(input) {
   );
 }
 
+function normalizeAnchorValue(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^#/, "")
+    .replace(/\s+/g, "-");
+}
+
+function withFragmentHref(href, anchor) {
+  const normalizedAnchor = normalizeAnchorValue(anchor);
+  if (!normalizedAnchor) {
+    return href;
+  }
+
+  const base = String(href || "").split("#")[0];
+  return `${base}#${normalizedAnchor}`;
+}
+
 function contentTitle(raw) {
   const match = String(raw || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   if (!match) {
@@ -140,6 +157,46 @@ function tokenize(input) {
     .replace(/[^a-z0-9_\-\s]/g, " ")
     .split(/\s+/)
     .filter((token) => token.length > 1);
+}
+
+function intentCueBoost(prompt, chunk) {
+  const lowerPrompt = String(prompt || "").toLowerCase();
+  const metadata = [chunk?.title, chunk?.sectionTitle, chunk?.sourceTitle, chunk?.href, chunk?.content]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  let score = 0;
+
+  if ((lowerPrompt.includes("k8s") || lowerPrompt.includes("kubernetes")) && (metadata.includes("k8s") || metadata.includes("kubernetes"))) {
+    score += 2.2;
+  }
+
+  if ((lowerPrompt.includes("auth engine") || lowerPrompt.includes("auth method")) && (metadata.includes(" auth ") || metadata.includes("/auth/"))) {
+    score += 1.6;
+  }
+
+  if ((lowerPrompt.includes("database secrets") || lowerPrompt.includes("db credentials")) && (metadata.includes("database") || metadata.includes("/secrets/databases"))) {
+    score += 2.0;
+  }
+
+  if (lowerPrompt.includes("oidc") && metadata.includes("oidc")) {
+    score += 1.8;
+  }
+
+  if (lowerPrompt.includes("jwt") && metadata.includes("jwt")) {
+    score += 1.8;
+  }
+
+  if (lowerPrompt.includes("ldap") && metadata.includes("ldap")) {
+    score += 1.8;
+  }
+
+  if (lowerPrompt.includes("mariadb") && metadata.includes("mariadb")) {
+    score += 1.8;
+  }
+
+  return score;
 }
 
 function promptHasAny(prompt, terms) {
@@ -462,6 +519,67 @@ function splitPlainTextIntoChunks(text, maxLen = 1100) {
   return chunks;
 }
 
+function extractSectionsFromHtml(html, resource, title) {
+  const source = String(html || "");
+  const headingRegex = /<(h[1-6])([^>]*)>([\s\S]*?)<\/\1>/gi;
+  const matches = [];
+  let match;
+
+  while ((match = headingRegex.exec(source)) !== null) {
+    matches.push({
+      tag: String(match[1] || "h2").toLowerCase(),
+      attrs: String(match[2] || ""),
+      innerHtml: String(match[3] || ""),
+      index: match.index,
+      endIndex: headingRegex.lastIndex
+    });
+  }
+
+  if (matches.length === 0) {
+    return [];
+  }
+
+  const sections = [];
+  for (let i = 0; i < matches.length; i += 1) {
+    const current = matches[i];
+    const next = matches[i + 1];
+    const sectionHtml = source.slice(current.endIndex, next ? next.index : source.length);
+    const sectionTitle = stripHtml(current.innerHtml).replace(/\s+/g, " ").trim();
+    const sectionText = stripHtml(sectionHtml);
+    const idMatch = current.attrs.match(/\sid=["']([^"']+)["']/i);
+    const anchorLinkMatch = current.innerHtml.match(/href=["']#([^"']+)["']/i);
+    const nestedIdMatch = current.innerHtml.match(/\sid=["']([^"']+)["']/i);
+    const anchor = normalizeAnchorValue(idMatch?.[1] || anchorLinkMatch?.[1] || nestedIdMatch?.[1] || sectionTitle.toLowerCase());
+    const href = withFragmentHref(resource.href, anchor);
+
+    if (!sectionTitle && !sectionText) {
+      continue;
+    }
+
+    const chunkTexts = splitPlainTextIntoChunks(sectionText || sectionTitle, 900);
+    for (let chunkIndex = 0; chunkIndex < chunkTexts.length; chunkIndex += 1) {
+      const content = chunkTexts[chunkIndex];
+      if (!content) {
+        continue;
+      }
+
+      sections.push({
+        id: `${resource.href}#section-${i + 1}-${chunkIndex + 1}`,
+        type: "text",
+        content,
+        title,
+        sourceTitle: resource.title || title,
+        sectionTitle: sectionTitle || title,
+        href,
+        kind: resource.kind || "guide",
+        language: "text"
+      });
+    }
+  }
+
+  return sections;
+}
+
 function extractCodeBlocksFromHtml(html) {
   const blocks = [];
   const regex = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/gi;
@@ -491,12 +609,14 @@ function normalizeFetchedDoc(resource, fetched) {
   const body = String(fetched?.body || "");
   const title = contentType.includes("html") ? contentTitle(body) : resource?.title || "Untitled";
   const plainText = contentType.includes("html") ? stripHtml(body) : String(body || "");
-  const baseChunks = splitPlainTextIntoChunks(plainText).map((content, index) => ({
+  const sectionChunks = contentType.includes("html") ? extractSectionsFromHtml(body, resource, title) : [];
+  const baseChunks = (sectionChunks.length > 0 ? [] : splitPlainTextIntoChunks(plainText)).map((content, index) => ({
     id: `${resource.href}#text-${index + 1}`,
     type: "text",
     content,
     title,
     sourceTitle: resource.title || title,
+    sectionTitle: title,
     href: resource.href,
     kind: resource.kind || "guide",
     language: "text"
@@ -508,12 +628,13 @@ function normalizeFetchedDoc(resource, fetched) {
     content: code.content,
     title,
     sourceTitle: resource.title || title,
+    sectionTitle: title,
     href: resource.href,
     kind: resource.kind || "guide",
     language: code.language || "text"
   }));
 
-  return [...baseChunks, ...codeBlocks];
+  return [...sectionChunks, ...baseChunks, ...codeBlocks];
 }
 
 async function getResourceChunks(resource) {
@@ -541,7 +662,7 @@ function lexicalRank(prompt, chunks, topN) {
   const querySet = new Set(queryTokens);
   const scored = chunks
     .map((chunk) => {
-      const text = `${chunk.title}\n${chunk.content}`;
+      const text = `${chunk.title}\n${chunk.sectionTitle || ""}\n${chunk.content}`;
       const tokens = tokenize(text);
       const tf = toTermFrequency(tokens);
       let score = 0;
@@ -560,6 +681,8 @@ function lexicalRank(prompt, chunks, topN) {
       if (lowerContent.includes(String(prompt || "").toLowerCase())) {
         score += 0.8;
       }
+
+      score += intentCueBoost(prompt, chunk);
 
       return { ...chunk, lexicalScore: score };
     })
@@ -666,6 +789,19 @@ function toDocsPayload(chunks) {
   return docs;
 }
 
+function toEvidencePayload(chunks) {
+  return (chunks || []).slice(0, DOC_SEARCH_TOP_K).map((chunk) => ({
+    title: chunk.sectionTitle || chunk.sourceTitle || chunk.title,
+    href: chunk.href,
+    kind: chunk.kind || "guide",
+    description: trimSnippet(chunk.content, 220),
+    snippet: trimSnippet(chunk.content, 320),
+    sourceTitle: chunk.sourceTitle || chunk.title,
+    sectionTitle: chunk.sectionTitle || chunk.title,
+    type: chunk.type || "text"
+  }));
+}
+
 function resourceScoreForPrompt(prompt, resource, promptTerms) {
   const title = String(resource?.title || "").toLowerCase();
   const href = String(resource?.href || "").toLowerCase();
@@ -747,11 +883,11 @@ export function buildDocSearchPromptSupplement(searchResult) {
   }
 
   const lines = [
-    "Retrieved documentation excerpts (static guidance, not runtime truth):"
+    "Retrieved documentation excerpts (static guidance, not runtime truth). When useful, answer with HAL commands first and then include one direct doc section link from this evidence:"
   ];
 
   for (const chunk of chunks.slice(0, DOC_SEARCH_TOP_K)) {
-    lines.push(`- Source: ${chunk.sourceTitle || chunk.title} (${chunk.href})`);
+    lines.push(`- Source: ${chunk.sourceTitle || chunk.title}${chunk.sectionTitle ? ` · ${chunk.sectionTitle}` : ""} (${chunk.href})`);
     if (chunk.type === "code") {
       lines.push(`  Code (${chunk.language || "text"}):`);
       lines.push("  ```");
@@ -797,9 +933,11 @@ export async function retrieveDocsForPrompt(prompt, context, options = {}) {
   const topChunks = reranked.slice(0, DOC_SEARCH_TOP_K);
   const docCandidates = backfillDocs(toDocsPayload(topChunks), resources, prompt, 16);
   const docs = filterDocsByPromptRelevance(prompt, docCandidates, DOC_SEARCH_MAX_DOCS);
+  const evidence = toEvidencePayload(topChunks);
 
   return {
     docs,
+    evidence,
     chunks: topChunks,
     mode,
     debug: {

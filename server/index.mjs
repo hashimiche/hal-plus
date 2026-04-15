@@ -33,9 +33,31 @@ function resolveBehaviorContextWithIntentHints(prompt) {
   const looksLikeVcsIntent = ["vcs", "gitops", "pull request", "merge request", "workflow"].some((term) =>
     lowerPrompt.includes(term)
   );
+  const looksLikeVaultIntent = [
+    "auth engine",
+    "secret engine",
+    "k8s auth",
+    "kubernetes auth",
+    "vault secrets operator",
+    "vso",
+    "jwt auth",
+    "oidc auth",
+    "ldap auth",
+    "database secrets",
+    "db credentials",
+    "mariadb",
+    "vault policy"
+  ].some((term) => lowerPrompt.includes(term));
 
   if (base?.primary && !(base.primary.subcommand === "product" && looksLikeVcsIntent)) {
     return base;
+  }
+
+  if (looksLikeVaultIntent) {
+    const vaultHinted = resolveBehaviorContext(`${prompt} vault kubernetes auth engine jwt oidc ldap mariadb vso`);
+    if (vaultHinted?.primary) {
+      return vaultHinted;
+    }
   }
 
   if (!looksLikeVcsIntent) {
@@ -127,6 +149,7 @@ async function docsForPromptWithFallback(prompt, context) {
     const fallbackDocs = await rankDocsForPrompt(prompt, context);
     return {
       docs: fallbackDocs,
+      evidence: [],
       chunks: [],
       mode: "fallback-disabled-search"
     };
@@ -134,6 +157,7 @@ async function docsForPromptWithFallback(prompt, context) {
 
   return {
     docs: [],
+    evidence: [],
     chunks: [],
     mode: "no-match"
   };
@@ -204,10 +228,10 @@ app.post("/api/docs", async (req, res) => {
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
     const context = resolveBehaviorContextWithIntentHints(prompt);
     const search = await docsForPromptWithFallback(prompt, context);
-    res.json({ docs: search.docs, retrieval: { mode: search.mode, debug: search.debug || null } });
+    res.json({ docs: search.docs, evidence: search.evidence || [], retrieval: { mode: search.mode, debug: search.debug || null } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown docs error";
-    res.status(500).json({ error: message, docs: [] });
+    res.status(500).json({ error: message, docs: [], evidence: [] });
   }
 });
 

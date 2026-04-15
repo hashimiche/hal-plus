@@ -63,6 +63,13 @@ type CatalogLink = {
   description?: string;
 };
 
+type DocsEvidenceItem = CatalogLink & {
+  snippet?: string;
+  sourceTitle?: string;
+  sectionTitle?: string;
+  type?: string;
+};
+
 type DocsRetrievalMeta = {
   mode?: string;
   debug?: unknown;
@@ -302,6 +309,7 @@ export default function App() {
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [catalog, setCatalog] = useState<BehaviorCatalog | null>(null);
   const [docSuggestions, setDocSuggestions] = useState<CatalogLink[]>([]);
+  const [docEvidence, setDocEvidence] = useState<DocsEvidenceItem[]>([]);
   const [docsRetrievalMode, setDocsRetrievalMode] = useState<string>("idle");
   const [suggestionSeed, setSuggestionSeed] = useState(() => Math.floor(Math.random() * 100000));
   const formRef = useRef<HTMLFormElement>(null);
@@ -364,6 +372,7 @@ export default function App() {
   useEffect(() => {
     if (!shouldShowDocsForPrompt(latestUserPrompt)) {
       setDocSuggestions([]);
+      setDocEvidence([]);
       setDocsRetrievalMode("idle");
       return;
     }
@@ -383,14 +392,20 @@ export default function App() {
           return;
         }
 
-        const data = (await response.json()) as { docs?: CatalogLink[]; retrieval?: DocsRetrievalMeta };
+        const data = (await response.json()) as {
+          docs?: CatalogLink[];
+          evidence?: DocsEvidenceItem[];
+          retrieval?: DocsRetrievalMeta;
+        };
         setDocSuggestions(Array.isArray(data.docs) ? data.docs : []);
+        setDocEvidence(Array.isArray(data.evidence) ? data.evidence : []);
         setDocsRetrievalMode(typeof data.retrieval?.mode === "string" ? data.retrieval.mode : "unknown");
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
 
+        setDocEvidence([]);
         setDocsRetrievalMode("error");
       }
     };
@@ -559,7 +574,19 @@ export default function App() {
     return relevantDocs.filter((doc) => doc.score > 0).slice(0, 4);
   }, [docSuggestions, docsRetrievalMode, latestUserPrompt, relevantDocs]);
 
-  const showDocsSidebar = visibleDocs.length > 0;
+  const visibleEvidence = useMemo(() => {
+    if (!shouldShowDocsForPrompt(latestUserPrompt)) {
+      return [];
+    }
+
+    if (docsRetrievalMode === "no-match") {
+      return [];
+    }
+
+    return docEvidence.slice(0, 4);
+  }, [docEvidence, docsRetrievalMode, latestUserPrompt]);
+
+  const showDocsSidebar = visibleEvidence.length > 0 || visibleDocs.length > 0;
 
   const healthChips: HealthChip[] = useMemo(
     () => {
@@ -789,19 +816,32 @@ export default function App() {
         <section className="panel utility-panel docs-panel">
           <header className="panel-header">
             <span className="panel-kicker">Documentation</span>
-            <h2>Relevant Sources</h2>
+            <h2>{visibleEvidence.length > 0 ? "Relevant Sections" : "Relevant Sources"}</h2>
             <p>{activeCatalogProduct?.label ? `For ${activeCatalogProduct.label}` : "Based on your current question."}</p>
           </header>
           <ul className="docs-list">
-            {visibleDocs.map((doc) => (
-              <li key={doc.href} className={`doc-card ${doc === visibleDocs[0] ? "featured-doc" : ""}`}>
-                <div className="doc-kind">{doc.kind || "guide"}</div>
-                <a href={doc.href} target="_blank" rel="noreferrer">
-                  {doc.title}
-                </a>
-                <p>{doc.description}</p>
-              </li>
-            ))}
+            {visibleEvidence.length > 0
+              ? visibleEvidence.map((evidence, index) => (
+                  <li key={`${evidence.href}-${evidence.sectionTitle || evidence.title}`} className={`doc-card ${index === 0 ? "featured-doc" : ""}`}>
+                    <div className="doc-kind">{evidence.kind || "guide"}</div>
+                    <a href={evidence.href} target="_blank" rel="noreferrer">
+                      {evidence.sectionTitle || evidence.title}
+                    </a>
+                    {evidence.sourceTitle && evidence.sourceTitle !== evidence.sectionTitle ? (
+                      <p className="doc-source">From {evidence.sourceTitle}</p>
+                    ) : null}
+                    <p>{evidence.snippet || evidence.description}</p>
+                  </li>
+                ))
+              : visibleDocs.map((doc) => (
+                  <li key={doc.href} className={`doc-card ${doc === visibleDocs[0] ? "featured-doc" : ""}`}>
+                    <div className="doc-kind">{doc.kind || "guide"}</div>
+                    <a href={doc.href} target="_blank" rel="noreferrer">
+                      {doc.title}
+                    </a>
+                    <p>{doc.description}</p>
+                  </li>
+                ))}
           </ul>
         </section>
       </aside>

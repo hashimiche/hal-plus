@@ -50,6 +50,18 @@
       "description": "Official Vault product documentation."
     },
     {
+      "title": "Vault Kubernetes Auth Method",
+      "href": "https://developer.hashicorp.com/vault/docs/auth/kubernetes",
+      "kind": "official",
+      "description": "Configure the Kubernetes auth method for service account based login flows."
+    },
+    {
+      "title": "Vault Database Secrets Tutorial",
+      "href": "https://developer.hashicorp.com/vault/tutorials/db-credentials/database-secrets?variants=vault-deploy%3Aselfhosted#configure-the-database-secrets-engine",
+      "kind": "official",
+      "description": "Database secrets engine tutorial with direct configuration steps and section anchors."
+    },
+    {
       "title": "Validated Patterns: Vault",
       "href": "https://developer.hashicorp.com/validated-patterns/vault",
       "kind": "guide",
