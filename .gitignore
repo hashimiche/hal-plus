@@ -26,3 +26,4 @@ pnpm-debug.log*
 # local runtime artifacts
 *.pid
 *.pid.lock
+.hal-plus-cache/
