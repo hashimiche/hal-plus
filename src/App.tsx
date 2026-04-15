@@ -1,4 +1,15 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ComponentPropsWithoutRef,
+  FormEvent,
+  KeyboardEvent,
+  ReactElement,
+  ReactNode,
+  isValidElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -52,6 +63,11 @@ type CatalogLink = {
   description?: string;
 };
 
+type DocsRetrievalMeta = {
+  mode?: string;
+  debug?: unknown;
+};
+
 type CatalogSubcommand = {
   id: string;
   title: string;
@@ -77,6 +93,16 @@ type CatalogProduct = {
 
 type BehaviorCatalog = {
   products: CatalogProduct[];
+};
+
+type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & {
+  inline?: boolean;
+  className?: string;
+  children?: ReactNode;
+};
+
+type MarkdownPreProps = ComponentPropsWithoutRef<"pre"> & {
+  children?: ReactNode;
 };
 
 const themeVersions: ThemeVersion[] = [
@@ -189,6 +215,86 @@ function shouldShowDocsForPrompt(prompt: string): boolean {
   return false;
 }
 
+function loadingVerbForMessageId(messageId: string): string {
+  const verbs = ["thinking", "analyzing", "grounding", "reasoning", "processing"];
+  if (!messageId) {
+    return verbs[0];
+  }
+
+  let hash = 0;
+  for (let i = 0; i < messageId.length; i += 1) {
+    hash = (hash * 31 + messageId.charCodeAt(i)) % 2147483647;
+  }
+
+  return verbs[Math.abs(hash) % verbs.length];
+}
+
+function MarkdownCodeBlock({ inline, className, children, ...props }: MarkdownCodeProps) {
+  if (inline) {
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  }
+
+  return (
+    <code className={className} {...props}>
+      {children}
+    </code>
+  );
+}
+
+function extractText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map((item) => extractText(item)).join("");
+  }
+  if (isValidElement(node)) {
+    return extractText((node as ReactElement<{ children?: ReactNode }>).props.children);
+  }
+  return "";
+}
+
+function MarkdownPreBlock({ children, ...props }: MarkdownPreProps) {
+  const [copied, setCopied] = useState(false);
+  const rawText = extractText(children).replace(/\n$/, "");
+
+  let codeClassName = "";
+  if (isValidElement(children)) {
+    const child = children as ReactElement<{ className?: string }>;
+    codeClassName = String(child.props.className || "");
+  }
+
+  const handleCopy = async () => {
+    if (!rawText) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(rawText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Ignore clipboard errors and keep the code block readable.
+    }
+  };
+
+  return (
+    <div className="code-block-wrap">
+      <button type="button" className="code-copy-btn" onClick={handleCopy} aria-label="Copy code block">
+        <span className="copy-icon" aria-hidden />
+        {copied ? "Copied" : "Copy"}
+      </button>
+      <pre {...props}>
+        <code className={codeClassName}>{rawText}</code>
+      </pre>
+    </div>
+  );
+}
+
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -196,8 +302,10 @@ export default function App() {
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [catalog, setCatalog] = useState<BehaviorCatalog | null>(null);
   const [docSuggestions, setDocSuggestions] = useState<CatalogLink[]>([]);
+  const [docsRetrievalMode, setDocsRetrievalMode] = useState<string>("idle");
   const [suggestionSeed, setSuggestionSeed] = useState(() => Math.floor(Math.random() * 100000));
   const formRef = useRef<HTMLFormElement>(null);
+  const chatPanelRef = useRef<HTMLElement>(null);
   const theme = getThemeFromPath(window.location.pathname);
 
   const estimatedTokens = useMemo(() => {
@@ -256,6 +364,7 @@ export default function App() {
   useEffect(() => {
     if (!shouldShowDocsForPrompt(latestUserPrompt)) {
       setDocSuggestions([]);
+      setDocsRetrievalMode("idle");
       return;
     }
 
@@ -274,12 +383,15 @@ export default function App() {
           return;
         }
 
-        const data = (await response.json()) as { docs?: CatalogLink[] };
+        const data = (await response.json()) as { docs?: CatalogLink[]; retrieval?: DocsRetrievalMeta };
         setDocSuggestions(Array.isArray(data.docs) ? data.docs : []);
+        setDocsRetrievalMode(typeof data.retrieval?.mode === "string" ? data.retrieval.mode : "unknown");
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
+
+        setDocsRetrievalMode("error");
       }
     };
 
@@ -287,6 +399,15 @@ export default function App() {
 
     return () => controller.abort();
   }, [latestUserPrompt]);
+
+  useEffect(() => {
+    const panel = chatPanelRef.current;
+    if (!panel) {
+      return;
+    }
+
+    panel.scrollTop = panel.scrollHeight;
+  }, [messages]);
 
   const activeCatalogProduct = useMemo(() => {
     const products = catalog?.products || [];
@@ -345,6 +466,69 @@ export default function App() {
       .map((entry) => entry.prompt);
   }, [catalog?.products, suggestionSeed]);
 
+  const followUpSuggestionsByAssistantId = useMemo(() => {
+    const products = catalog?.products || [];
+    const result: Record<string, string[]> = {};
+
+    const suggestionsForPrompt = (prompt: string): string[] => {
+      const normalizedPrompt = String(prompt || "").trim();
+      if (!normalizedPrompt) {
+        return activeSuggestions.slice(0, 3);
+      }
+
+      if (products.length === 0) {
+        return activeSuggestions.slice(0, 3);
+      }
+
+      const scoredProducts = products
+        .map((product) => ({
+          product,
+          score:
+            scoreTerms(normalizedPrompt, product.matchTerms) +
+            product.subcommands.reduce((total, subcommand) => total + scoreTerms(normalizedPrompt, subcommand.matchTerms), 0)
+        }))
+        .sort((left, right) => right.score - left.score);
+
+      const targetProduct =
+        (scoredProducts[0] && scoredProducts[0].score > 0 ? scoredProducts[0].product : activeCatalogProduct) || products[0];
+
+      const relevantSubcommands = targetProduct.subcommands.filter((subcommand) =>
+        scoreTerms(normalizedPrompt, subcommand.matchTerms) > 0
+      );
+
+      const rawPool = [
+        ...(targetProduct.samplePrompts || []),
+        ...(relevantSubcommands.length > 0
+          ? relevantSubcommands.flatMap((subcommand) => subcommand.samplePrompts || [])
+          : targetProduct.subcommands.flatMap((subcommand) => subcommand.samplePrompts || []))
+      ];
+
+      const suggestions = uniqueStrings(rawPool).filter(
+        (candidate) => candidate.toLowerCase() !== normalizedPrompt.toLowerCase()
+      );
+
+      if (suggestions.length > 0) {
+        return suggestions.slice(0, 3);
+      }
+
+      return activeSuggestions.slice(0, 3);
+    };
+
+    let previousUserPrompt = "";
+    for (const message of messages) {
+      if (message.role === "user") {
+        previousUserPrompt = message.text;
+        continue;
+      }
+
+      if (message.role === "assistant" && message.text.trim()) {
+        result[message.id] = suggestionsForPrompt(previousUserPrompt);
+      }
+    }
+
+    return result;
+  }, [activeCatalogProduct, activeSuggestions, catalog?.products, messages]);
+
   const relevantDocs = useMemo(() => {
     const products = catalog?.products || [];
     if (products.length === 0) {
@@ -364,12 +548,16 @@ export default function App() {
       return [];
     }
 
+    if (docsRetrievalMode === "no-match") {
+      return [];
+    }
+
     if (docSuggestions.length > 0) {
       return docSuggestions.slice(0, 4);
     }
 
     return relevantDocs.filter((doc) => doc.score > 0).slice(0, 4);
-  }, [docSuggestions, latestUserPrompt, relevantDocs]);
+  }, [docSuggestions, docsRetrievalMode, latestUserPrompt, relevantDocs]);
 
   const showDocsSidebar = visibleDocs.length > 0;
 
@@ -488,10 +676,8 @@ export default function App() {
     return null;
   };
 
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const prompt = input.trim();
+  const sendPrompt = async (rawPrompt: string) => {
+    const prompt = rawPrompt.trim();
     if (!prompt || isSending) {
       return;
     }
@@ -575,6 +761,11 @@ export default function App() {
     } finally {
       setIsSending(false);
     }
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await sendPrompt(input);
   };
 
   const clearHistory = () => {
@@ -662,13 +853,13 @@ export default function App() {
           </div>
         </header>
 
-        <section className="chat-panel">
+        <section ref={chatPanelRef} className="chat-panel">
           {messages.length === 0 ? (
             <div className="empty-chat">
               <p>Ask a question and HAL+ will answer with MCP-grounded commands first.</p>
               <div className="suggestion-row">
                 {activeSuggestions.map((suggestion) => (
-                  <button key={suggestion} type="button" className="suggestion-chip" onClick={() => setInput(suggestion)}>
+                  <button key={suggestion} type="button" className="suggestion-chip" onClick={() => void sendPrompt(suggestion)}>
                     {suggestion}
                   </button>
                 ))}
@@ -683,11 +874,35 @@ export default function App() {
                     <span>{message.ts}</span>
                   </div>
                   {message.role === "assistant" && message.text.trim() === "" ? (
-                    <div className="thinking-inline">HAL+ is grounding the answer...</div>
-                  ) : (
-                    <div className="msg-markdown">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown>
+                    <div className="thinking-inline">
+                      <span>{loadingVerbForMessageId(message.id)}</span>
+                      <span className="thinking-dots" aria-hidden>
+                        ...
+                      </span>
                     </div>
+                  ) : (
+                    <>
+                      <div className="msg-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCodeBlock, pre: MarkdownPreBlock }}>
+                          {message.text}
+                        </ReactMarkdown>
+                      </div>
+                      {message.role === "assistant" && followUpSuggestionsByAssistantId[message.id]?.length ? (
+                        <div className="followup-row">
+                          {followUpSuggestionsByAssistantId[message.id].map((suggestion) => (
+                            <button
+                              key={`${message.id}-${suggestion}`}
+                              type="button"
+                              className="suggestion-chip followup-chip"
+                              onClick={() => void sendPrompt(suggestion)}
+                              disabled={isSending}
+                            >
+                              {suggestion}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </>
                   )}
                 </li>
               ))}
@@ -696,25 +911,11 @@ export default function App() {
         </section>
 
         <form ref={formRef} className="composer" onSubmit={submit}>
-          <div className="composer-topline">
-            <div>
-              <span className="composer-label">Ask HAL+</span>
-              <span className="composer-note">Suggestions are sampled across available products.</span>
-            </div>
-            <div className="suggestion-row compact-row">
-              {activeSuggestions.slice(0, 3).map((suggestion) => (
-                <button key={suggestion} type="button" className="suggestion-chip" onClick={() => setInput(suggestion)}>
-                  {suggestion}
-                </button>
-              ))}
-            </div>
-          </div>
-
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleComposerKeyDown}
-            placeholder={activeSuggestions[0] || "Example: How do I deploy Vault in HAL?"}
+            placeholder="Question for HAL+"
             rows={3}
           />
           <div className="composer-actions">

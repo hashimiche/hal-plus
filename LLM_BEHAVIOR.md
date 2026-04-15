@@ -7,6 +7,7 @@ Purpose
 Ownership split
 - HAL Plus owns routing, response structure, educational framing, and product workflow logic.
 - HAL MCP owns live field truth for the user's installed HAL version: current commands, flags, endpoints, runtime state, verification paths, and version-sensitive capability data.
+- Cross-repo change discipline: when AI-facing behavior changes touch MCP tools, skill metadata, prompt contracts, or grounding schemas, update both repositories (`hal-plus` and `hal`) in the same work cycle so UX logic and MCP truth stay aligned.
 - Behavior packs in HAL Plus may keep stable product knowledge, but runtime or version-sensitive claims must prefer HAL MCP.
 - If HAL MCP is unavailable, HAL Plus may still answer with stable product logic, but it must mark live runtime facts as unknown and show the HAL/MCP checks needed to confirm them.
 - New product work should default to this split unless there is a strong reason to keep a fact entirely inside HAL Plus.
@@ -23,6 +24,10 @@ UX contract
 - Status chips must stay lightweight; compact detail overlays are acceptable for both product chips and runtime chips such as MCP and token/context, but they must remain small, hover-adjacent, and never cover the main chat/composer area.
 - Overlay structure should be consistent across chip types: short heading, one or two factual lines, then compact tags when useful.
 - Suggestion chips are useful and should remain concise; when multiple products exist, rotate or randomize suggestions across products instead of pinning one product forever.
+- Assistant answer cards should have a wide readable layout on desktop (not narrow chat bubbles) so command blocks and verification steps remain easy to scan.
+- After each completed assistant answer, show a small set of follow-up question suggestions that are relevant to the preceding user prompt when possible.
+- While an assistant response is streaming, use short progressive activity wording ending in "-ing" (for example, thinking, analyzing, processing) rather than static grounding-only phrasing.
+- The chat message area should auto-follow streamed output to the latest chunk so users do not need to manually scroll during long answers.
 - User-facing answers must stay concise by default. Include endpoints, lab surfaces, or extra links only when the user explicitly asks for them.
 
 Response contract (operational prompts)
@@ -31,11 +36,14 @@ Response contract (operational prompts)
 3. Verification commands.
 4. One official docs link by default.
 5. Short notes only when they materially help.
+6. Keep MCP-grounded operational guidance first, then optionally add a brief model insight expansion (2-3 lines max) only if it adds practical context.
+7. For short status prompts (for example, "Is TFE running?"), answer in fast mode: `Answer: Yes|No|Unknown`, one evidence line from HAL MCP, and one primary check command; do not narrate internal MCP tool names.
 
 Deterministic routing policy
 - If prompt is operational and matches a known workflow, use deterministic engine output.
 - If no workflow matches, use model path with runtime policy prompt.
 - Never invent commands or endpoints.
+- Preferred tone: deterministic MCP-first answer quality is primary; model reasoning is a concise supplement, not a replacement.
 
 Mandatory guardrails
 - Prefer HAL commands before raw commands when possible.

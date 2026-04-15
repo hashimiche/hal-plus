@@ -20,6 +20,8 @@
       "terraform status",
       "tfe status",
       "is tfe up",
+      "is tfe running",
+      "tfe running",
       "check tfe",
       "tfe health"
     ],

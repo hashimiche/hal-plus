@@ -21,7 +21,16 @@
       "hal tf ws",
       "hal tf workspace",
       "terraform workspace",
+      "tfe workspace",
+      "bootstrap workspace",
+      "bootstrap a workspace",
       "vcs workflow",
+      "vcs-driven",
+      "vcs driven",
+      "vcs-driven workflow",
+      "vcs driver workflow",
+      "vcs driver",
+      "driver workflow",
       "gitlab",
       "workspace wiring",
       "remote runs from gitlab"
@@ -67,6 +76,12 @@
       "description": "Official product docs."
     },
     {
+      "title": "Terraform Enterprise Workspaces",
+      "href": "https://developer.hashicorp.com/terraform/enterprise/workspaces",
+      "kind": "official",
+      "description": "Workspace creation and VCS-backed run model in Terraform Enterprise."
+    },
+    {
       "title": "Terraform Workflows Overview",
       "href": "https://www.hashicorp.com/en/blog/which-terraform-workflow-should-i-use-vcs-cli-or-api",
       "kind": "guide",
@@ -100,6 +115,7 @@
   "samplePrompts": [
     "I want the GitLab-backed TFE workflow",
     "How do I bootstrap a VCS-driven TFE workspace?",
+    "If I want to test VCS driver workflow, what should I do?",
     "Why is hal tf ws -e taking so long?"
   ]
 }

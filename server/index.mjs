@@ -10,6 +10,7 @@ import { createHalExecutableResolver } from "./hal-exec.mjs";
 import { createHalMcpClient } from "./hal-mcp-client.mjs";
 import { createPolicyEngine } from "./policy-engine.mjs";
 import { deterministicIntentResponse } from "./deterministic-engine.mjs";
+import { buildDocSearchPromptSupplement, retrieveDocsForPrompt } from "./doc-search.mjs";
 import { baselineProductsToUi, getOllamaRuntime, lokiStateFromBaseline } from "./runtime-status.mjs";
 import { streamSSESections, streamSSEText, proxyOllamaStreamToSSE } from "./sse.mjs";
 
@@ -25,6 +26,25 @@ const POLICY_CACHE_TTL_MS = Number(process.env.HAL_POLICY_CACHE_TTL_MS || 30000)
 const resolveHalExecutable = createHalExecutableResolver();
 const halMcpClient = createHalMcpClient(resolveHalExecutable);
 const { getRuntimePolicy, buildSystemPrompt, lastUserPrompt } = createPolicyEngine(halMcpClient, POLICY_CACHE_TTL_MS);
+
+function resolveBehaviorContextWithIntentHints(prompt) {
+  const base = resolveBehaviorContext(prompt);
+  const lowerPrompt = String(prompt || "").toLowerCase();
+  const looksLikeVcsIntent = ["vcs", "gitops", "pull request", "merge request", "workflow"].some((term) =>
+    lowerPrompt.includes(term)
+  );
+
+  if (base?.primary && !(base.primary.subcommand === "product" && looksLikeVcsIntent)) {
+    return base;
+  }
+
+  if (!looksLikeVcsIntent) {
+    return base;
+  }
+
+  const hinted = resolveBehaviorContext(`${prompt} terraform enterprise tfe workspace vcs gitlab`);
+  return hinted?.primary ? hinted : base;
+}
 
 async function callMcpWithFallback(primaryTool, fallbackTools, args = {}) {
   const primary = await halMcpClient.callTool(primaryTool, args);
@@ -97,6 +117,28 @@ async function rankDocsForPrompt(prompt, context) {
   }
 }
 
+async function docsForPromptWithFallback(prompt, context) {
+  const search = await retrieveDocsForPrompt(prompt, context, { ollamaBaseUrl: OLLAMA_BASE_URL });
+  if (Array.isArray(search.docs) && search.docs.length > 0) {
+    return search;
+  }
+
+  if (search.mode === "disabled") {
+    const fallbackDocs = await rankDocsForPrompt(prompt, context);
+    return {
+      docs: fallbackDocs,
+      chunks: [],
+      mode: "fallback-disabled-search"
+    };
+  }
+
+  return {
+    docs: [],
+    chunks: [],
+    mode: "no-match"
+  };
+}
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, model: OLLAMA_MODEL, ollama: OLLAMA_BASE_URL });
 });
@@ -160,9 +202,9 @@ app.get("/api/catalog", (_req, res) => {
 app.post("/api/docs", async (req, res) => {
   try {
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
-    const context = resolveBehaviorContext(prompt);
-    const docs = await rankDocsForPrompt(prompt, context);
-    res.json({ docs });
+    const context = resolveBehaviorContextWithIntentHints(prompt);
+    const search = await docsForPromptWithFallback(prompt, context);
+    res.json({ docs: search.docs, retrieval: { mode: search.mode, debug: search.debug || null } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown docs error";
     res.status(500).json({ error: message, docs: [] });
@@ -175,11 +217,16 @@ app.post("/api/chat", async (req, res) => {
     const runtimePolicy = await getRuntimePolicy();
 
     const prompt = lastUserPrompt(inputMessages);
-    const behaviorContext = resolveBehaviorContext(prompt);
+    const behaviorContext = resolveBehaviorContextWithIntentHints(prompt);
     const behaviorGrounding = await gatherBehaviorGrounding(behaviorContext, halMcpClient).catch(() => null);
+    const docSearch = await docsForPromptWithFallback(prompt, behaviorContext).catch(() => ({ docs: [], chunks: [], mode: "error" }));
     const systemPrompt = buildSystemPrompt(
       runtimePolicy,
-      [buildBehaviorPromptSupplement(behaviorContext), buildGroundingPromptSupplement(behaviorGrounding)]
+      [
+        buildBehaviorPromptSupplement(behaviorContext),
+        buildGroundingPromptSupplement(behaviorGrounding),
+        buildDocSearchPromptSupplement(docSearch)
+      ]
         .filter(Boolean)
         .join("\n\n")
     );

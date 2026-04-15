@@ -63,6 +63,12 @@
       "description": "Official product docs."
     },
     {
+      "title": "Terraform Enterprise Workspaces",
+      "href": "https://developer.hashicorp.com/terraform/enterprise/workspaces",
+      "kind": "official",
+      "description": "Workspace model and run behavior for VCS-driven workflows."
+    },
+    {
       "title": "Terraform Workflows Overview",
       "href": "https://www.hashicorp.com/en/blog/which-terraform-workflow-should-i-use-vcs-cli-or-api",
       "kind": "guide",
