@@ -5,7 +5,7 @@
   "productLabel": "Vault",
   "subcommand": "product",
   "title": "Vault in HAL",
-  "summary": "Local Vault CE or Enterprise in dev mode with root token defaults, plus scenario labs for audit, JWT, OIDC, Kubernetes, LDAP, and MariaDB.",
+  "summary": "Local Vault CE or Enterprise in dev mode with root token defaults, plus scenario labs for audit, JWT, OIDC, Kubernetes, LDAP, and database secrets.",
   "priority": 40,
   "mcp": {
     "baselineTool": "hal_status_baseline",
@@ -119,7 +119,7 @@
   "focusBullets": [
     "HAL deploys Vault in dev mode by default with root token set to root.",
     "Vault Enterprise features require --edition ent and VAULT_LICENSE.",
-    "Scenario labs build full local stacks: JWT (GitLab), OIDC (Keycloak), K8s (KinD + VSO), LDAP, and MariaDB.",
+    "Scenario labs build full local stacks: JWT (GitLab), OIDC (Keycloak), K8s (KinD + VSO), LDAP, and database secrets.",
     "Vault deploy auto-registers observability artifacts when the obs stack is already running."
   ],
   "notes": [
@@ -129,7 +129,7 @@
     "Audit logging can be shipped to Loki with hal vault audit --enable --loki using the shared audit volume path /vault/logs/audit.log.",
     "K8s CSI demo mode requires Vault Enterprise; the command downgrades to native mode automatically on OSS.",
     "JWT role guardrails in the lab are bound to GitLab project root/secret-zero and protected tags matching v*.",
-    "MariaDB dynamic credentials are configured with role dba-role and can be reused by Boundary workflows."
+    "Database dynamic credentials are configured with role dba-role and can be reused by Boundary workflows."
   ],
   "samplePrompts": [
     "How do I deploy Vault CE versus Enterprise in HAL?",
@@ -164,7 +164,7 @@ Use this pack when the user asks about Vault product-level behavior, CE versus E
 - OIDC: `hal vault oidc` for Keycloak human SSO and group-to-policy mapping.
 - K8s: `hal vault k8s` for KinD + VSO with native sync and optional CSI mode.
 - LDAP: `hal vault ldap` for auth plus LDAP secrets engine dynamic/static/library examples.
-- MariaDB: `hal vault mariadb` for dynamic database credentials and JIT leases.
+- Database: `hal vault database` for dynamic database credentials and JIT leases.
 
 ## HAL MCP Rule
 

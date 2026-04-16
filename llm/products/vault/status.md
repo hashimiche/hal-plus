@@ -51,11 +51,11 @@
     }
   ],
   "focusBullets": [
-    "Run hal vault status before enabling JWT, OIDC, K8s, LDAP, or MariaDB scenarios.",
+    "Run hal vault status before enabling JWT, OIDC, K8s, LDAP, or database scenarios.",
     "If Vault is down, restore base deploy first before scenario-level troubleshooting."
   ],
   "notes": [
-    "Status output includes ecosystem container hints for Keycloak, GitLab, LDAP, MariaDB, and KinD.",
+    "Status output includes ecosystem container hints for Keycloak, GitLab, LDAP, database backends, and KinD.",
     "If status shows crash logs with license clues, route to Enterprise license checks and redeploy guidance."
   ],
   "samplePrompts": [
