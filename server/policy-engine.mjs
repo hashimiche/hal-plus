@@ -10,8 +10,8 @@ const DEFAULT_POLICY = {
     include_official_docs: true
   },
   tool_policy: {
-    required_prefetch_tools: ["hal_status_baseline", "get_capabilities", "validate_command"],
-    on_uncertain_then_call: ["validate_command", "get_help_for_topic"],
+    required_prefetch_tools: ["hal_status_baseline", "get_capabilities", "hal_policy_profile", "validate_command"],
+    on_uncertain_then_call: ["validate_command", "get_help_for_topic", "get_skill_for_topic"],
     fallback: {
       mode: "fail_closed",
       allow_answer: false,
@@ -90,7 +90,7 @@ export function createPolicyEngine(mcpClient, ttlMs) {
   function buildSystemPrompt(policy, behaviorPromptSupplement = "") {
     const requiredTools = Array.isArray(policy?.tool_policy?.required_prefetch_tools)
       ? policy.tool_policy.required_prefetch_tools.join(", ")
-      : "hal_status_baseline, get_capabilities, validate_command";
+      : DEFAULT_POLICY.tool_policy.required_prefetch_tools.join(", ");
 
     const sections = [
       "You are HAL Plus, an educational HashiCorp Academy Labs assistant.",

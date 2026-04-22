@@ -269,8 +269,35 @@ function uniqueStrings(items) {
 
 function includeLinksInAnswer(prompt) {
   const lower = String(prompt || "").toLowerCase();
-  return ["url", "endpoint", "link", "ui", "surface", "dashboard", "grafana", "prometheus", "open"].some((term) =>
+  return [
+    "url",
+    "endpoint",
+    "link",
+    "ui",
+    "surface",
+    "dashboard",
+    "grafana",
+    "prometheus",
+    "loki",
+    "monitor",
+    "monitoring",
+    "observability",
+    "open"
+  ].some((term) => lower.includes(term));
+}
+
+function isMonitoringIntent(prompt) {
+  const lower = String(prompt || "").toLowerCase();
+  return ["monitor", "monitoring", "observability", "grafana", "prometheus", "loki", "dashboard"].some((term) =>
     lower.includes(term)
+  );
+}
+
+function isMonitoringResource(resource) {
+  const title = String(resource?.title || "").toLowerCase();
+  const href = String(resource?.href || "").toLowerCase();
+  return ["monitor", "observability", "grafana", "prometheus", "loki", "dashboard"].some(
+    (term) => title.includes(term) || href.includes(term)
   );
 }
 
@@ -280,6 +307,25 @@ function compactCommands(commands, limit) {
 
 function compactNotes(items, limit) {
   return uniqueStrings(items || []).slice(0, limit);
+}
+
+function coverageNotes(coverage) {
+  if (!coverage) {
+    return [];
+  }
+
+  const notes = [];
+  if (!coverage.discoveryAvailable) {
+    notes.push("HAL MCP tool discovery is unavailable for this prompt, so live grounding is partial.");
+    return notes;
+  }
+  if (coverage.hasMissingRequired) {
+    notes.push(`HAL MCP is missing required tools for this flow: ${coverage.missingRequired.map((entry) => entry.primaryTool).join(", ")}.`);
+  }
+  if (coverage.hasMissingOptional) {
+    notes.push(`HAL MCP is missing optional grounding tools for this flow: ${coverage.missingOptional.map((entry) => entry.primaryTool).join(", ")}.`);
+  }
+  return notes;
 }
 
 function promptIncludesAny(prompt, terms) {
@@ -292,9 +338,41 @@ function scoreResourceForPrompt(prompt, resource) {
   const title = String(resource?.title || "").toLowerCase();
   const href = String(resource?.href || "").toLowerCase();
   let score = 0;
+  const isDatabaseDoc =
+    title.includes("database") || href.includes("db-credentials") || href.includes("/secrets/databases") || href.includes("/database");
+  const databaseIntent = promptIncludesAny(lowerPrompt, [
+    "database",
+    "db",
+    "credentials",
+    "dynamic credentials",
+    "rotate root",
+    "jit"
+  ]);
+  const monitoringIntent = promptIncludesAny(lowerPrompt, [
+    "monitor",
+    "monitoring",
+    "observability",
+    "grafana",
+    "prometheus",
+    "loki",
+    "dashboard"
+  ]);
 
   if (resource?.kind === "official") {
     score += 5;
+  }
+
+  if (isDatabaseDoc && !databaseIntent) {
+    score -= 8;
+  }
+
+  if (monitoringIntent) {
+    if (title.includes("observability") || title.includes("monitor") || href.includes("observability") || href.includes("monitor")) {
+      score += 6;
+    }
+    if (isDatabaseDoc) {
+      score -= 6;
+    }
   }
 
   if (promptIncludesAny(lowerPrompt, ["workspace", "vcs", "gitlab", "pull request", "merge request", "bootstrap"])) {
@@ -322,7 +400,7 @@ function scoreResourceForPrompt(prompt, resource) {
   return score;
 }
 
-export async function deterministicIntentResponse(prompt, preloadedContext, grounding) {
+export async function deterministicIntentResponse(prompt, preloadedContext, grounding, coverage = null, docSearch = null) {
   if (!prompt || !isOperationalPrompt(prompt)) {
     return null;
   }
@@ -350,9 +428,17 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
     uniqueStrings([...(product?.statusCommands || []), ...(behavior.statusCommands || [])]),
     grounding?.status?.commands || grounding?.baseline?.commands || []
   );
-  const actionCommandsRaw = mergeBehaviorCommands(behavior.actionCommands || [], grounding?.plan?.commands || []);
+  const actionCommandsRaw = mergeBehaviorCommands(
+    behavior.actionCommands || [],
+    uniqueStrings([...(grounding?.plan?.commands || []), ...(grounding?.skill?.commands || [])])
+  );
   const verifyCommandsRaw = mergeBehaviorCommands(behavior.verifyCommands || [], grounding?.verify?.commands || []);
-  const notesRaw = uniqueStrings([...(behavior.notes || []), ...(product?.notes || []), ...notesFromGrounding(grounding)]);
+  const notesRaw = uniqueStrings([
+    ...(behavior.notes || []),
+    ...(product?.notes || []),
+    ...notesFromGrounding(grounding),
+    ...coverageNotes(coverage)
+  ]);
   const focusBulletsRaw = uniqueStrings([...(behavior.focusBullets || []), ...(product?.focusBullets || [])]);
   const statusCommands = compactCommands(statusCommandsRaw, 2);
   const actionCommands = compactCommands(actionCommandsRaw, 4);
@@ -366,18 +452,50 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
     .concat((grounding?.help?.docs || []).map((href) => ({ title: "HAL MCP help doc", href, kind: "official" })))
     .concat((grounding?.verify?.docs || []).map((href) => ({ title: "HAL MCP verify doc", href, kind: "official" })));
   const resources = uniqueResourceList(resourceItems);
-  const officialDocs = resources
+  const monitoringIntent = isMonitoringIntent(prompt);
+  const officialCandidates = resources
     .filter((resource) => resource.kind === "official")
     .map((resource) => ({ resource, score: scoreResourceForPrompt(prompt, resource) }))
     .sort((left, right) => right.score - left.score)
-    .map((entry) => entry.resource)
-    .slice(0, 1);
+    .map((entry) => entry.resource);
+
+  const officialDocs = (() => {
+    const policyDocs = Array.isArray(docSearch?.docs)
+      ? docSearch.docs
+          .filter((doc) => typeof doc?.href === "string" && doc.href.trim())
+          .map((doc) => ({ title: doc.title || "Documentation", href: doc.href, kind: doc.kind || "guide" }))
+      : [];
+    if (policyDocs.length > 0) {
+      return policyDocs.slice(0, 2);
+    }
+
+    if (!monitoringIntent) {
+      return officialCandidates.slice(0, 1);
+    }
+
+    const monitoringDocs = officialCandidates.filter((resource) => isMonitoringResource(resource));
+    const docs = [];
+    if (monitoringDocs.length > 0) {
+      docs.push(monitoringDocs[0]);
+    }
+    for (const resource of officialCandidates) {
+      if (docs.some((doc) => doc.href === resource.href)) {
+        continue;
+      }
+      docs.push(resource);
+      if (docs.length >= 2) {
+        break;
+      }
+    }
+    return docs.slice(0, 2);
+  })();
+
   const uiLinks = uniqueResourceList(
     []
       .concat(Array.isArray(product?.uiLinks) ? product.uiLinks : [])
       .concat(Array.isArray(behavior.uiLinks) ? behavior.uiLinks : [])
       .concat(uiLinksFromGrounding(grounding))
-  ).slice(0, 3);
+  ).slice(0, monitoringIntent ? 4 : 3);
 
   const shouldIncludeLinks = includeLinksInAnswer(prompt);
 
@@ -430,7 +548,11 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
   }
 
   if (officialDocs.length > 0) {
-    lines.push("", `Docs: ${officialDocs[0].href}`);
+    if (officialDocs.length === 1) {
+      lines.push("", `Docs: ${officialDocs[0].href}`);
+    } else {
+      lines.push("", "Docs:", ...officialDocs.map((resource) => `- ${resource.href}`));
+    }
   }
 
   if (shouldIncludeLinks && uiLinks.length > 0) {

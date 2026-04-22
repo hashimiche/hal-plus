@@ -72,5 +72,5 @@ Use this pack for readiness checks and health triage before scenario operations.
 ## Operator Rules
 
 - Prefer `hal vault status` first.
-- If down, route to `hal vault deploy`.
+- If down, route to `hal vault create`.
 - If partial scenario drift appears, route to the specific scenario force-reset flow instead of generic destroy/redeploy.

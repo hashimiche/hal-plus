@@ -10,20 +10,20 @@
   "mcp": {
     "baselineTool": "hal_status_baseline",
     "statusTool": "get_tfe_status",
-    "helpTopic": "terraform workspace",
-    "component": "terraform_workspace",
-    "verifyComponent": "terraform_workspace",
-    "planIntent": "setup terraform workspace"
+    "helpTopic": "terraform vcs-workflow",
+    "component": "terraform_vcs_workflow",
+    "verifyComponent": "terraform_vcs_workflow",
+    "planIntent": "setup terraform vcs workflow"
   },
   "match": {
     "any": [
-      "hal terraform workspace",
-      "hal tf ws",
-      "hal tf workspace",
-      "terraform workspace",
-      "tfe workspace",
-      "bootstrap workspace",
-      "bootstrap a workspace",
+      "vcs",
+      "hal terraform vcs-workflow",
+      "hal terraform vcs-workflow enable",
+      "terraform vcs-workflow",
+      "tfe vcs-workflow",
+      "bootstrap vcs-workflow",
+      "bootstrap a vcs workflow",
       "vcs workflow",
       "vcs-driven",
       "vcs driven",
@@ -37,7 +37,7 @@
     ],
     "all": []
   },
-  "helpCommand": ["terraform", "workspace"],
+  "helpCommand": ["terraform", "vcs-workflow"],
   "statusCommands": [
     "hal status",
     "hal terraform status",
@@ -61,10 +61,10 @@
   ],
   "actionCommands": [
     "hal capacity",
-    "hal tf ws -e"
+    "hal terraform vcs-workflow enable"
   ],
   "verifyCommands": [
-    "hal terraform workspace --help",
+    "hal terraform vcs-workflow --help",
     "hal terraform status",
     "curl -k -I https://tfe.localhost:8443/app"
   ],
@@ -101,7 +101,7 @@
     }
   ],
   "focusBullets": [
-    "VCS-driven flow is possible through GitLab with hal tf ws -e.",
+    "VCS-driven flow is possible through GitLab with hal terraform vcs-workflow enable.",
     "This path is slow compared with CLI flow because GitLab bootstrap adds time and resource load.",
     "Validation should be described as a commit push to main, not only tag creation."
   ],
@@ -116,7 +116,7 @@
     "I want the GitLab-backed TFE workflow",
     "How do I bootstrap a VCS-driven TFE workspace?",
     "If I want to test VCS driver workflow, what should I do?",
-    "Why is hal tf ws -e taking so long?"
+    "Why is hal terraform vcs-workflow enable taking so long?"
   ]
 }
 -->
@@ -129,5 +129,5 @@ Use this pack when the user wants the VCS-driven Terraform Enterprise lab.
 
 - Mention GitLab explicitly because it is the reason this flow is slower and heavier.
 - Keep validation grounded in a real branch commit flow.
-- Prefer `hal tf ws -e` as the short command when the question is clearly about the workspace bootstrap path.
+- Prefer `hal terraform vcs-workflow enable` when the question is clearly about workspace bootstrap.
 - Pull the current workspace help, trigger guidance, and recommended commands from HAL MCP.

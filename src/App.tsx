@@ -42,7 +42,7 @@ type LiveStatus = {
   runtime: {
     loki: { ok: boolean; detail: string };
     llm: { ok: boolean; detail: string; model?: string; contextWindow?: number };
-    halMcp: { ok: boolean; detail: string };
+    halMcp: { ok: boolean; detail: string; missingTools?: string[] };
   };
   products: HalProduct[];
 };
@@ -314,6 +314,7 @@ export default function App() {
   const [suggestionSeed, setSuggestionSeed] = useState(() => Math.floor(Math.random() * 100000));
   const formRef = useRef<HTMLFormElement>(null);
   const chatPanelRef = useRef<HTMLElement>(null);
+  const activeChatRequestRef = useRef<AbortController | null>(null);
   const theme = getThemeFromPath(window.location.pathname);
 
   const estimatedTokens = useMemo(() => {
@@ -685,6 +686,7 @@ export default function App() {
     }
 
     if (chip.id === "hal-mcp") {
+      const missingTools = liveStatus?.runtime.halMcp.missingTools || [];
       return (
         <div className="chip-overlay runtime-overlay" role="presentation">
           <div className="chip-overlay-head">
@@ -695,6 +697,9 @@ export default function App() {
           <div className="chip-overlay-tags">
             <span>Grounding source</span>
             <span>Runtime truth</span>
+            {missingTools.map((toolName) => (
+              <span key={toolName}>{toolName} missing</span>
+            ))}
           </div>
         </div>
       );
@@ -719,6 +724,8 @@ export default function App() {
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setIsSending(true);
+    const requestController = new AbortController();
+    activeChatRequestRef.current = requestController;
 
     const assistantId = crypto.randomUUID();
     const assistantMessage: Message = {
@@ -734,7 +741,8 @@ export default function App() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: conversation })
+        body: JSON.stringify({ messages: conversation }),
+        signal: requestController.signal
       });
 
       if (!response.ok || !response.body) {
@@ -779,6 +787,13 @@ export default function App() {
         }
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setMessages((prev) =>
+          prev.map((entry) => (entry.id === assistantId ? { ...entry, text: "Generation stopped." } : entry))
+        );
+        return;
+      }
+
       const message = error instanceof Error ? error.message : "Unknown error";
       setMessages((prev) =>
         prev.map((entry) =>
@@ -786,8 +801,15 @@ export default function App() {
         )
       );
     } finally {
+      if (activeChatRequestRef.current === requestController) {
+        activeChatRequestRef.current = null;
+      }
       setIsSending(false);
     }
+  };
+
+  const stopStreaming = () => {
+    activeChatRequestRef.current?.abort();
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -796,6 +818,7 @@ export default function App() {
   };
 
   const clearHistory = () => {
+    activeChatRequestRef.current?.abort();
     setMessages([]);
     setInput("");
     setIsSending(false);
@@ -959,6 +982,11 @@ export default function App() {
             rows={3}
           />
           <div className="composer-actions">
+            {isSending ? (
+              <button type="button" className="ghost stop-btn" onClick={stopStreaming}>
+                Stop
+              </button>
+            ) : null}
             <button type="button" className="ghost" onClick={clearHistory}>
               Clear
             </button>

@@ -34,7 +34,7 @@
   "actionCommands": [
     "hal capacity",
     "export TFE_LICENSE='your_license_string'",
-    "hal terraform deploy"
+    "hal terraform create"
   ],
   "verifyCommands": [
     "hal terraform status",
@@ -82,18 +82,18 @@
     }
   ],
   "focusBullets": [
-    "TFE requires TFE_LICENSE before hal terraform deploy can boot.",
+    "TFE requires TFE_LICENSE before hal terraform create can boot.",
     "TFE is one of the heaviest HAL deployments, so hal capacity is the first check.",
     "HAL exposes TFE at https://tfe.localhost:8443 with a self-signed certificate.",
     "Deploy auto-creates the initial admin user and caches an application API token."
   ],
   "notes": [
-    "HAL-first path is hal terraform deploy, hal terraform workspace --enable, and hal terraform cli depending on workflow type.",
+    "HAL-first path is hal terraform create, hal terraform vcs-workflow enable, and hal terraform api-workflow depending on workflow type.",
     "The browser will show a self-signed certificate warning; accept the risk to reach the UI.",
     "Deploy auto-bootstraps the admin account haladmin / hal9000FTW unless overridden by flags.",
     "When deploy completes successfully, HAL caches the application token at ~/.hal/tfe-app-api-token.",
-    "If observability is already running, Terraform Enterprise metrics are registered in Prometheus and the official TFE dashboard is imported into Grafana folder HAL.",
-    "If TFE was deployed before observability, run hal terraform deploy --configure-obs after hal obs deploy to backfill monitoring artifacts."
+    "Use explicit lifecycle commands for Terraform observability: hal terraform obs create, hal terraform obs update, hal terraform obs delete, hal terraform obs status.",
+    "hal terraform obs create expects the obs stack to already be running; run hal obs create first if needed."
   ],
   "samplePrompts": [
     "How do I deploy Terraform Enterprise in HAL?",
@@ -109,17 +109,17 @@ Use this pack when the user is asking about Terraform Enterprise, `hal terraform
 
 ## Ground Truth
 
-- `hal terraform deploy` enforces `TFE_LICENSE` before boot.
+- `hal terraform create` enforces `TFE_LICENSE` before boot.
 - `hal capacity` should be part of the answer because TFE is a high-consumption deployment.
 - HAL exposes the UI at `https://tfe.localhost:8443` through the local proxy.
 - The browser must accept the self-signed certificate risk before the UI is usable.
 - Deploy bootstraps an admin account automatically and caches an app API token at `~/.hal/tfe-app-api-token`.
-- If `hal obs deploy` is already active, TFE metrics are registered in Prometheus and the official dashboard is imported into Grafana folder `HAL`.
+- If `hal obs deploy` is already active, register Terraform observability artifacts with `hal terraform obs create`.
 
 ## Workflow Choices
 
-- VCS-driven flow: `hal terraform workspace --enable` or `hal tf ws -e`.
-- CLI-driven flow: `hal tf cli -e` then `hal tf cli -c`.
+- VCS-driven flow: `hal terraform vcs-workflow enable`.
+- API helper flow: `hal terraform api-workflow`.
 - Verification should stay HAL-first before low-level container commands.
 
 ## Educational Framing

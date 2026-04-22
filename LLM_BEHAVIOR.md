@@ -47,6 +47,8 @@ Deterministic routing policy
 
 Mandatory guardrails
 - Prefer HAL commands before raw commands when possible.
+- Terraform helper command naming and actions must stay normalized in responses: use `hal terraform api-workflow`, `hal terraform vcs-workflow`, and `hal terraform agent` with lifecycle actions `status|enable|disable|update` only; do not suggest `create|delete` aliases.
+- For `hal terraform api-workflow`, only suggest `--target primary|twin` (not `both`).
 - For CSI workflows, include Enterprise prerequisite checks.
 - If runtime evidence is missing, say unknown and show checks.
 - For product answers, prefer HAL MCP outputs over hardcoded facts whenever the MCP tool surface can provide the same information.

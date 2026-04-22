@@ -5,7 +5,12 @@ import {
   collectBehaviorResources,
   resolveBehaviorContext
 } from "./behavior-registry.mjs";
-import { buildGroundingPromptSupplement, gatherBehaviorGrounding } from "./behavior-grounding.mjs";
+import {
+  buildGroundingPromptSupplement,
+  buildMcpCoveragePromptSupplement,
+  evaluateBehaviorMcpCoverage,
+  gatherBehaviorGrounding
+} from "./behavior-grounding.mjs";
 import { createHalExecutableResolver } from "./hal-exec.mjs";
 import { createHalMcpClient } from "./hal-mcp-client.mjs";
 import { createPolicyEngine } from "./policy-engine.mjs";
@@ -26,46 +31,33 @@ const POLICY_CACHE_TTL_MS = Number(process.env.HAL_POLICY_CACHE_TTL_MS || 30000)
 const resolveHalExecutable = createHalExecutableResolver();
 const halMcpClient = createHalMcpClient(resolveHalExecutable);
 const { getRuntimePolicy, buildSystemPrompt, lastUserPrompt } = createPolicyEngine(halMcpClient, POLICY_CACHE_TTL_MS);
+function missingCoreMcpTools(runtimeCatalog, runtimePolicy = null) {
+  const required = Array.isArray(runtimePolicy?.tool_policy?.required_prefetch_tools)
+    ? runtimePolicy.tool_policy.required_prefetch_tools
+    : ["hal_status_baseline", "get_capabilities", "hal_policy_profile", "validate_command"];
+  const available = new Set(Array.isArray(runtimeCatalog?.toolNames) ? runtimeCatalog.toolNames : []);
+  return required.filter((toolName) => !available.has(toolName));
+}
 
-function resolveBehaviorContextWithIntentHints(prompt) {
-  const base = resolveBehaviorContext(prompt);
-  const lowerPrompt = String(prompt || "").toLowerCase();
-  const looksLikeVcsIntent = ["vcs", "gitops", "pull request", "merge request", "workflow"].some((term) =>
-    lowerPrompt.includes(term)
-  );
-  const looksLikeVaultIntent = [
-    "auth engine",
-    "secret engine",
-    "k8s auth",
-    "kubernetes auth",
-    "vault secrets operator",
-    "vso",
-    "jwt auth",
-    "oidc auth",
-    "ldap auth",
-    "database secrets",
-    "db credentials",
-    "mariadb",
-    "vault policy"
-  ].some((term) => lowerPrompt.includes(term));
-
-  if (base?.primary && !(base.primary.subcommand === "product" && looksLikeVcsIntent)) {
-    return base;
+function resolveBehaviorContextFromConversation(inputMessages, prompt) {
+  const direct = resolveBehaviorContext(prompt);
+  if (direct?.primary) {
+    return direct;
   }
 
-  if (looksLikeVaultIntent) {
-    const vaultHinted = resolveBehaviorContext(`${prompt} vault kubernetes auth engine jwt oidc ldap mariadb vso`);
-    if (vaultHinted?.primary) {
-      return vaultHinted;
-    }
+  const recentUserPrompts = (inputMessages || [])
+    .filter((m) => m?.role === "user" && typeof m?.content === "string")
+    .map((m) => m.content.trim())
+    .filter(Boolean)
+    .slice(-3);
+
+  if (recentUserPrompts.length === 0) {
+    return direct;
   }
 
-  if (!looksLikeVcsIntent) {
-    return base;
-  }
-
-  const hinted = resolveBehaviorContext(`${prompt} terraform enterprise tfe workspace vcs gitlab`);
-  return hinted?.primary ? hinted : base;
+  const mergedPrompt = recentUserPrompts.join("\n");
+  const merged = resolveBehaviorContext(mergedPrompt);
+  return merged?.primary ? merged : direct;
 }
 
 async function callMcpWithFallback(primaryTool, fallbackTools, args = {}) {
@@ -169,18 +161,20 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/status", async (_req, res) => {
   try {
-    const [baseline, capabilities, llmRuntime] = await Promise.all([
+    const [baseline, runtimeCatalog, llmRuntime] = await Promise.all([
       callMcpWithFallback("hal_status_baseline", ["get_runtime_status"], {}),
-      halMcpClient.callTool("get_capabilities", {}),
+      halMcpClient.getRuntimeCatalog().catch(() => null),
       getOllamaRuntime(OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_CONTEXT_WINDOW)
     ]);
     const runtime = baseline?.structuredContent?.data?.runtime || null;
     const products = baselineProductsToUi(runtime);
     const lokiReady = lokiStateFromBaseline(runtime);
-    const capabilityCount = Array.isArray(capabilities?.structuredContent?.data?.actions)
-      ? capabilities.structuredContent.data.actions.length
-      : 0;
-    const mcpOk = !baseline?.isError && !capabilities?.isError;
+    const capabilityCount = Array.isArray(runtimeCatalog?.actions) ? runtimeCatalog.actions.length : 0;
+    const toolCount = Array.isArray(runtimeCatalog?.toolNames) ? runtimeCatalog.toolNames.length : 0;
+    const skillsCount = Number(runtimeCatalog?.skills?.skills_count || 0);
+    const missingTools = missingCoreMcpTools(runtimeCatalog, null);
+    const discoveryAvailable = Boolean(runtimeCatalog);
+    const mcpOk = !baseline?.isError && discoveryAvailable && missingTools.length === 0;
 
     res.json({
       runtime: {
@@ -194,8 +188,13 @@ app.get("/api/status", async (_req, res) => {
         halMcp: {
           ok: mcpOk,
           detail: mcpOk
-            ? `HAL MCP runtime tools ready (${capabilityCount} actions discovered)`
-            : "HAL MCP runtime tools unavailable"
+            ? `HAL MCP runtime tools ready (${toolCount} tools, ${capabilityCount} actions, ${skillsCount} skills)`
+            : !discoveryAvailable
+              ? "HAL MCP discovery unavailable"
+              : missingTools.length > 0
+                ? `HAL MCP missing required tools: ${missingTools.join(", ")}`
+                : "HAL MCP runtime tools unavailable",
+          missingTools
         }
       },
       products
@@ -226,7 +225,7 @@ app.get("/api/catalog", (_req, res) => {
 app.post("/api/docs", async (req, res) => {
   try {
     const prompt = typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
-    const context = resolveBehaviorContextWithIntentHints(prompt);
+    const context = resolveBehaviorContext(prompt);
     const search = await docsForPromptWithFallback(prompt, context);
     res.json({ docs: search.docs, evidence: search.evidence || [], retrieval: { mode: search.mode, debug: search.debug || null } });
   } catch (error) {
@@ -238,16 +237,21 @@ app.post("/api/docs", async (req, res) => {
 app.post("/api/chat", async (req, res) => {
   try {
     const inputMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-    const runtimePolicy = await getRuntimePolicy();
 
     const prompt = lastUserPrompt(inputMessages);
-    const behaviorContext = resolveBehaviorContextWithIntentHints(prompt);
-    const behaviorGrounding = await gatherBehaviorGrounding(behaviorContext, halMcpClient).catch(() => null);
-    const docSearch = await docsForPromptWithFallback(prompt, behaviorContext).catch(() => ({ docs: [], chunks: [], mode: "error" }));
+    const behaviorContext = resolveBehaviorContextFromConversation(inputMessages, prompt);
+    const [runtimePolicy, runtimeCatalog, docSearch] = await Promise.all([
+      getRuntimePolicy(),
+      halMcpClient.getRuntimeCatalog().catch(() => null),
+      docsForPromptWithFallback(prompt, behaviorContext).catch(() => ({ docs: [], chunks: [], mode: "error" }))
+    ]);
+    const behaviorCoverage = evaluateBehaviorMcpCoverage(behaviorContext, runtimeCatalog, runtimePolicy);
+    const behaviorGrounding = await gatherBehaviorGrounding(behaviorContext, halMcpClient, runtimeCatalog, prompt).catch(() => null);
     const systemPrompt = buildSystemPrompt(
       runtimePolicy,
       [
         buildBehaviorPromptSupplement(behaviorContext),
+        buildMcpCoveragePromptSupplement(behaviorCoverage),
         buildGroundingPromptSupplement(behaviorGrounding),
         buildDocSearchPromptSupplement(docSearch)
       ]
@@ -262,7 +266,7 @@ app.post("/api/chat", async (req, res) => {
         .map((m) => ({ role: m.role, content: m.content }))
     ];
 
-    const deterministicReply = await deterministicIntentResponse(prompt, behaviorContext, behaviorGrounding);
+    const deterministicReply = await deterministicIntentResponse(prompt, behaviorContext, behaviorGrounding, behaviorCoverage, docSearch);
     if (deterministicReply) {
       await streamSSESections(res, deterministicReply, { delayMs: 80 });
       return;

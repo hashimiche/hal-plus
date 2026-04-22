@@ -9,30 +9,30 @@
   "priority": 100,
   "mcp": {
     "baselineTool": "hal_status_baseline",
-    "statusTool": "get_tfe_cli_status",
-    "helpTopic": "terraform cli",
-    "component": "terraform_cli",
-    "verifyComponent": "terraform_cli",
-    "planIntent": "terraform cli helper workflow"
+    "statusTool": "get_tfe_api_workflow_status",
+    "helpTopic": "terraform api-workflow",
+    "component": "terraform_api_workflow",
+    "verifyComponent": "terraform_api_workflow",
+    "planIntent": "terraform api-workflow helper workflow"
   },
   "match": {
     "any": [
-      "hal terraform cli",
-      "hal tf cli",
-      "terraform cli",
+      "hal terraform api-workflow",
+      "hal tf api-workflow",
+      "terraform api-workflow",
       "tfx",
       "helper container",
-      "cli workflow",
+      "api workflow",
       "terraform login",
-      "remote execution from cli"
+      "remote execution from api-workflow"
     ],
     "all": []
   },
-  "helpCommand": ["terraform", "cli"],
+  "helpCommand": ["terraform", "api-workflow"],
   "statusCommands": [
     "hal status",
     "hal terraform status",
-    "hal terraform cli",
+    "hal terraform api-workflow",
     "hal capacity"
   ],
   "preflightChecks": [
@@ -45,12 +45,12 @@
     }
   ],
   "actionCommands": [
-    "hal tf cli -e",
-    "hal tf cli -c"
+    "hal terraform api-workflow",
+    "hal tf api-workflow enable"
   ],
   "verifyCommands": [
-    "hal terraform cli",
-    "hal tf cli -c",
+    "hal terraform api-workflow",
+    "hal tf api-workflow enable",
     "terraform version",
     "tfx --help",
     "ls /workspaces"
@@ -89,33 +89,33 @@
   ],
   "focusBullets": [
     "CLI-driven workflow uses a dedicated helper container with terraform and tfx.",
-    "Build with hal tf cli -e, then enter with hal tf cli -c.",
+    "Provision and validate with hal terraform api-workflow or hal tf api-workflow enable.",
     "The helper flow mints auth, writes .tfx.hcl and Terraform credentials, and avoids host trust-store changes.",
     "Default org is hal and the scenario workspaces are spread across projects Dave and Frank."
   ],
   "notes": [
     "The helper image is designed for local TFE workflows without teaching the user to change the host trust store.",
-    "hal tf cli -c refreshes auth before opening the shell and seeds the default workspaces if they are missing.",
+    "hal terraform api-workflow refreshes auth and prepares the helper runtime for API-driven exercises.",
     "HAL ensures scenario projects Dave and Frank and the default hal-* workspace set inside org hal.",
     "The default scenario workspaces are hal-lucinated, hal-lelujah, and hal-ibut in Dave plus hal-ogen and hal-oween in Frank.",
     "The helper bootstrap authenticates with the admin account and creates a token for CLI use inside the container.",
-    "If the helper is stale, reset with hal tf cli --disable --force and rebuild with hal tf cli -e -f."
+    "If the helper is stale, reset with hal tf api-workflow disable --force and rebuild with hal tf api-workflow enable --force."
   ],
   "samplePrompts": [
     "I want the CLI-driven TFE workflow",
     "How do I use terraform and tfx against local TFE?",
-    "What does hal tf cli -c set up for me?"
+    "What does hal terraform api-workflow set up for me?"
   ]
 }
 -->
 
 # Terraform Enterprise CLI Flow
 
-Use this pack when the user wants the dedicated helper shell for Terraform CLI and `tfx`.
+Use this pack when the user wants the API helper workflow for Terraform CLI and `tfx`.
 
 ## Operator Rules
 
-- Prefer the short path `hal tf cli -e && hal tf cli -c` when the question is about getting started quickly.
+- Prefer `hal terraform api-workflow` (or `hal tf api-workflow enable`) when the question is about getting started quickly.
 - Mention that HAL writes auth and trust inside the helper container before the shell opens.
 - Mention the seeded scenario projects and workspaces because that is one of the immediate visible outcomes in the UI.
 - Current helper state and verification commands should come from HAL MCP when available.

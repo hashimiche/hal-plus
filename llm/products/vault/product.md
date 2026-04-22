@@ -35,8 +35,10 @@
   ],
   "actionCommands": [
     "hal vault status",
-    "hal vault deploy",
-    "hal vault deploy --edition ent"
+    "hal vault create",
+    "hal vault create --edition ent",
+    "hal obs create",
+    "hal vault obs create"
   ],
   "verifyCommands": [
     "hal vault status",
@@ -54,12 +56,6 @@
       "href": "https://developer.hashicorp.com/vault/docs/auth/kubernetes",
       "kind": "official",
       "description": "Configure the Kubernetes auth method for service account based login flows."
-    },
-    {
-      "title": "Vault Database Secrets Tutorial",
-      "href": "https://developer.hashicorp.com/vault/tutorials/db-credentials/database-secrets?variants=vault-deploy%3Aselfhosted#configure-the-database-secrets-engine",
-      "kind": "official",
-      "description": "Database secrets engine tutorial with direct configuration steps and section anchors."
     },
     {
       "title": "Validated Patterns: Vault",
@@ -117,15 +113,15 @@
     }
   ],
   "focusBullets": [
-    "HAL deploys Vault in dev mode by default with root token set to root.",
+    "HAL creates Vault in dev mode by default with root token set to root.",
     "Vault Enterprise features require --edition ent and VAULT_LICENSE.",
     "Scenario labs build full local stacks: JWT (GitLab), OIDC (Keycloak), K8s (KinD + VSO), LDAP, and database secrets.",
-    "Vault deploy auto-registers observability artifacts when the obs stack is already running."
+    "Vault observability artifacts use explicit lifecycle commands: hal vault obs create/update/delete/status."
   ],
   "notes": [
-    "For Enterprise mode, export VAULT_LICENSE before running hal vault deploy --edition ent.",
-    "Vault metrics wiring to Prometheus and Grafana dashboard import are automatic during deploy when obs is up.",
-    "If obs is deployed after Vault, run hal vault deploy --configure-obs to backfill artifacts without full redeploy.",
+    "For Enterprise mode, export VAULT_LICENSE before running hal vault create --edition ent.",
+    "For Vault monitoring, run hal obs create first then hal vault obs create.",
+    "Use hal vault obs update/delete/status for lifecycle management.",
     "Audit logging can be shipped to Loki with hal vault audit --enable --loki using the shared audit volume path /vault/logs/audit.log.",
     "K8s CSI demo mode requires Vault Enterprise; the command downgrades to native mode automatically on OSS.",
     "JWT role guardrails in the lab are bound to GitLab project root/secret-zero and protected tags matching v*.",
@@ -145,10 +141,10 @@ Use this pack when the user asks about Vault product-level behavior, CE versus E
 
 ## Ground Truth
 
-- `hal vault deploy` starts Vault in dev mode and sets root token to `root`.
-- Enterprise-specific features require `hal vault deploy --edition ent` and `VAULT_LICENSE` in the environment.
-- The base Vault deploy path auto-registers observability artifacts when `hal obs deploy` is already active.
-- Backfill-only path is `hal vault deploy --configure-obs` after observability is online.
+- `hal vault create` starts Vault in dev mode and sets root token to `root`.
+- Enterprise-specific features require `hal vault create --edition ent` and `VAULT_LICENSE` in the environment.
+- For monitoring, run `hal obs create` first, then `hal vault obs create`.
+- Use explicit lifecycle commands for Vault observability artifacts: `hal vault obs create|update|delete|status`.
 - Scenario stacks are intentionally full workflows, not just isolated auth mount toggles.
 
 ## CE versus Enterprise Framing

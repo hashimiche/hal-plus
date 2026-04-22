@@ -32,6 +32,84 @@ const PRODUCT_DOC_RULES = {
   }
 };
 
+const DOC_POLICY_MAX_LINKS = 2;
+
+const PRODUCT_FALLBACK_DOC = {
+  vault: {
+    title: "Vault Docs",
+    href: "https://developer.hashicorp.com/vault",
+    kind: "official",
+    description: "Official Vault documentation."
+  },
+  terraform: {
+    title: "Terraform Enterprise Docs",
+    href: "https://developer.hashicorp.com/terraform/enterprise",
+    kind: "official",
+    description: "Official Terraform Enterprise documentation."
+  }
+};
+
+const INTENT_DOC_POLICY = {
+  vault: [
+    {
+      id: "vault_vso",
+      terms: ["vso", "vault secrets operator", "secret operator", "k8s", "kubernetes", "csi"],
+      docs: [
+        {
+          title: "Vault Secrets Operator (VSO)",
+          href: "https://developer.hashicorp.com/vault/docs/deploy/kubernetes/vso",
+          kind: "official",
+          description: "Deploy and operate Vault Secrets Operator."
+        },
+        {
+          title: "VSO Tutorial",
+          href: "https://developer.hashicorp.com/vault/tutorials/kubernetes-introduction/vault-secrets-operator?productSlug=vault&tutorialSlug=kubernetes&tutorialSlug=vault-secrets-operator",
+          kind: "official",
+          description: "Hands-on tutorial for Vault Secrets Operator."
+        }
+      ]
+    },
+    {
+      id: "vault_monitoring",
+      terms: ["monitor", "monitoring", "observability", "grafana", "prometheus", "loki", "dashboard"],
+      docs: [
+        {
+          title: "Vault Observability at Scale",
+          href: "https://www.hashicorp.com/en/blog/hashicorp-vault-observability-monitoring-vault-at-scale",
+          kind: "guide",
+          description: "Monitoring and observability guidance for Vault."
+        },
+        {
+          title: "Vault Telemetry",
+          href: "https://developer.hashicorp.com/vault/docs/internals/telemetry",
+          kind: "official",
+          description: "Vault telemetry metrics and monitoring settings."
+        }
+      ]
+    }
+  ],
+  terraform: [
+    {
+      id: "tfe_monitoring",
+      terms: ["monitor", "monitoring", "observability", "grafana", "prometheus", "loki", "dashboard"],
+      docs: [
+        {
+          title: "Terraform Enterprise Docs",
+          href: "https://developer.hashicorp.com/terraform/enterprise",
+          kind: "official",
+          description: "Official Terraform Enterprise documentation."
+        },
+        {
+          title: "Terraform Enterprise Solution Design Guide",
+          href: "https://developer.hashicorp.com/validated-designs/terraform-solution-design-guides-terraform-enterprise",
+          kind: "guide",
+          description: "Architecture and operating guidance for TFE."
+        }
+      ]
+    }
+  ]
+};
+
 const chunkCache = new Map();
 
 function uniqueByHref(items) {
@@ -46,6 +124,46 @@ function uniqueByHref(items) {
     output.push(item);
   }
   return output;
+}
+
+function contextProductId(context) {
+  return String(context?.product?.product || context?.primary?.product || "").toLowerCase();
+}
+
+function hasAnyTerm(prompt, terms) {
+  const lower = String(prompt || "").toLowerCase();
+  return (terms || []).some((term) => lower.includes(String(term || "").toLowerCase()));
+}
+
+function policyDocsForPrompt(prompt, context) {
+  const productId = contextProductId(context);
+  const policies = INTENT_DOC_POLICY[productId] || [];
+  for (const policy of policies) {
+    if (hasAnyTerm(prompt, policy.terms)) {
+      return uniqueByHref(policy.docs || []).slice(0, DOC_POLICY_MAX_LINKS);
+    }
+  }
+  return [];
+}
+
+function fallbackDocsForContext(context) {
+  const productId = contextProductId(context);
+  const fallback = PRODUCT_FALLBACK_DOC[productId];
+  return fallback ? [fallback] : [];
+}
+
+function applyDocPolicy(prompt, context, docs) {
+  const mapped = policyDocsForPrompt(prompt, context);
+  if (mapped.length > 0) {
+    return mapped.slice(0, DOC_POLICY_MAX_LINKS);
+  }
+
+  const filtered = uniqueByHref(docs || []).slice(0, DOC_POLICY_MAX_LINKS);
+  if (filtered.length > 0) {
+    return filtered;
+  }
+
+  return fallbackDocsForContext(context).slice(0, DOC_POLICY_MAX_LINKS);
 }
 
 function ensureDir(dirPath) {
@@ -781,7 +899,7 @@ function toDocsPayload(chunks) {
       description: trimSnippet(chunk.content, 190)
     });
 
-    if (docs.length >= 4) {
+    if (docs.length >= DOC_POLICY_MAX_LINKS) {
       break;
     }
   }
@@ -932,7 +1050,8 @@ export async function retrieveDocsForPrompt(prompt, context, options = {}) {
     mode === "hybrid" ? await rerankWithEmbeddings(prompt, lexical, options.ollamaBaseUrl || "http://127.0.0.1:11434") : lexical;
   const topChunks = reranked.slice(0, DOC_SEARCH_TOP_K);
   const docCandidates = backfillDocs(toDocsPayload(topChunks), resources, prompt, 16);
-  const docs = filterDocsByPromptRelevance(prompt, docCandidates, DOC_SEARCH_MAX_DOCS);
+  const relevantDocs = filterDocsByPromptRelevance(prompt, docCandidates, DOC_POLICY_MAX_LINKS);
+  const docs = applyDocPolicy(prompt, context, relevantDocs);
   const evidence = toEvidencePayload(topChunks);
 
   return {
@@ -943,7 +1062,8 @@ export async function retrieveDocsForPrompt(prompt, context, options = {}) {
     debug: {
       resources: resources.length,
       chunks: allChunks.length,
-      considered: lexical.length
+      considered: lexical.length,
+      docPolicyApplied: true
     }
   };
 }

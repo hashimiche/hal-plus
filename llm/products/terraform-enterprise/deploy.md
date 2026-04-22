@@ -10,24 +10,24 @@
   "mcp": {
     "baselineTool": "hal_status_baseline",
     "statusTool": "get_tfe_status",
-    "helpTopic": "terraform deploy",
+    "helpTopic": "terraform create",
     "component": "terraform",
     "verifyComponent": "terraform",
-    "planIntent": "deploy terraform enterprise"
+    "planIntent": "create terraform enterprise"
   },
   "match": {
     "any": [
-      "hal terraform deploy",
-      "terraform deploy",
-      "deploy terraform enterprise",
-      "deploy tfe",
+      "hal terraform create",
+      "terraform create",
+      "create terraform enterprise",
+      "create tfe",
       "bring up tfe",
       "tfe license",
       "install tfe"
     ],
     "all": []
   },
-  "helpCommand": ["terraform", "deploy"],
+  "helpCommand": ["terraform", "create"],
   "statusCommands": [
     "hal status",
     "hal terraform status",
@@ -43,7 +43,7 @@
     },
     {
       "title": "Export a valid TFE license",
-      "why": "hal terraform deploy refuses to boot without TFE_LICENSE in the environment.",
+      "why": "hal terraform create refuses to boot without TFE_LICENSE in the environment.",
       "commands": [
         "export TFE_LICENSE='your_license_string'"
       ]
@@ -52,7 +52,7 @@
   "actionCommands": [
     "hal capacity",
     "export TFE_LICENSE='your_license_string'",
-    "hal terraform deploy"
+    "hal terraform create"
   ],
   "verifyCommands": [
     "hal terraform status",
@@ -102,7 +102,7 @@
   "focusBullets": [
     "Deploy waits on the proxied HTTPS health endpoint and can take several minutes.",
     "HAL automatically creates the initial admin user and foundation org/project wiring.",
-    "Use hal terraform deploy --configure-obs only after the observability stack is already running."
+    "Terraform observability artifacts are managed separately: use hal terraform obs create after hal obs create."
   ],
   "notes": [
     "User-facing URL remains https://tfe.localhost:8443 behind hal-tfe-proxy.",
@@ -110,11 +110,11 @@
     "The deploy path patches in-container trust and task-worker cache behavior so remote runs keep working locally.",
     "After deploy, tell the user to accept the browser warning for the self-signed certificate.",
     "Admin defaults are haladmin / hal9000FTW unless the operator overrides flags.",
-    "If observability is up first, metrics and the Grafana dashboard are wired automatically during deploy."
+    "Terraform observability is not auto-wired at deploy time; use hal terraform obs create after hal obs create."
   ],
   "samplePrompts": [
-    "Deploy TFE for me",
-    "Why is hal terraform deploy failing before startup?",
+    "Create TFE for me",
+    "Why is hal terraform create failing before startup?",
     "How do I wire observability after TFE is already running?"
   ]
 }
@@ -129,5 +129,5 @@ Use this pack when the user wants to boot, re-boot, or explain the Terraform Ent
 - Mention `hal capacity` before deployment because TFE is resource intensive.
 - Be explicit that `TFE_LICENSE` is mandatory.
 - State that the HTTPS endpoint is `https://tfe.localhost:8443` and the certificate is self-signed.
-- If observability comes later, the refresh action is `hal terraform deploy --configure-obs`, not a full redeploy by default.
+- If observability comes later, use explicit lifecycle commands: `hal obs create` then `hal terraform obs create`.
 - Pull current deploy syntax, current endpoint context, and verification commands from HAL MCP when available.

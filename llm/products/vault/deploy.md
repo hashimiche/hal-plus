@@ -10,24 +10,25 @@
   "mcp": {
     "baselineTool": "hal_status_baseline",
     "statusTool": "get_vault_status",
-    "helpTopic": "vault deploy",
+    "helpTopic": "vault create",
     "component": "vault",
     "verifyComponent": "vault",
-    "planIntent": "deploy vault"
+    "planIntent": "create vault"
   },
   "match": {
     "any": [
-      "hal vault deploy",
+      "hal vault create",
+      "create vault",
       "deploy vault",
       "start vault",
       "vault ce",
       "vault enterprise",
       "vault license",
-      "vault configure obs"
+      "vault obs"
     ],
     "all": []
   },
-  "helpCommand": ["vault", "deploy"],
+  "helpCommand": ["vault", "create"],
   "statusCommands": [
     "hal status",
     "hal vault status"
@@ -37,8 +38,8 @@
       "title": "Choose edition explicitly",
       "why": "Enterprise-only feature requests should not accidentally run on CE.",
       "commands": [
-        "hal vault deploy --edition ce",
-        "hal vault deploy --edition ent"
+        "hal vault create --edition ce",
+        "hal vault create --edition ent"
       ]
     },
     {
@@ -50,9 +51,10 @@
     }
   ],
   "actionCommands": [
-    "hal vault deploy",
-    "hal vault deploy --edition ent",
-    "hal vault deploy --configure-obs"
+    "hal vault create",
+    "hal vault create --edition ent",
+    "hal obs create",
+    "hal vault obs create"
   ],
   "verifyCommands": [
     "hal vault status",
@@ -79,14 +81,14 @@
     }
   ],
   "focusBullets": [
-    "Default deploy is dev mode with root token root.",
-    "Enterprise deploy blocks until VAULT_LICENSE is set.",
-    "Use --configure-obs to refresh only monitoring artifacts after obs comes online."
+    "Default create flow is dev mode with root token root.",
+    "Enterprise create flow blocks until VAULT_LICENSE is set.",
+    "For monitoring, run hal obs create first then hal vault obs create."
   ],
   "notes": [
     "If the user requests Sentinel (RGP/EGP), CSI mode, or other Enterprise-only workflows, recommend --edition ent explicitly.",
-    "Deploy registers Vault observability targets and dashboards when obs is already running.",
-    "If obs is not running, --configure-obs should stop and direct the user to hal obs deploy first."
+    "Vault observability artifacts are managed explicitly with hal vault obs create/update/delete/status.",
+    "If obs is not running, direct the user to hal obs create first."
   ],
   "samplePrompts": [
     "Deploy Vault Enterprise locally",
@@ -102,7 +104,7 @@ Use this pack for bring-up, re-bring-up, or edition-selection questions for Vaul
 
 ## Operator Rules
 
-- Always call out that HAL deploys Vault in dev mode and root token is `root`.
+- Always call out that HAL creates Vault in dev mode and root token is `root`.
 - For Enterprise asks, require `--edition ent` and `VAULT_LICENSE` explicitly.
-- Prefer `hal vault deploy --configure-obs` for observability backfill instead of full redeploy when Vault is already healthy.
+- For observability, prefer explicit lifecycle commands: `hal obs create`, then `hal vault obs create`.
 - Verify with `hal vault status` before moving into scenario skills.

@@ -62,7 +62,7 @@
   ],
   "notes": [
     "Status answers should stay concise and deterministic.",
-    "If the stack is down, recommend hal terraform deploy after checking capacity and license prerequisites.",
+    "If the stack is down, recommend hal terraform create after checking capacity and license prerequisites.",
     "If the UI is unreachable but deploy supposedly finished, validate both _health_check and /app on https://tfe.localhost:8443."
   ],
   "samplePrompts": [
