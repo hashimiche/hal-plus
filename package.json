@@ -10,7 +10,8 @@
     "dev:ui:wait": "wait-on tcp:127.0.0.1:9001 && npm run dev:ui",
     "dev:api": "node --watch server/index.mjs",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node server/index.mjs"
   },
   "dependencies": {
     "concurrently": "^9.0.1",

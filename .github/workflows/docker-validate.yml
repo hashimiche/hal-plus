@@ -1,0 +1,59 @@
+name: Docker Validate
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: hal-plus:ci
+
+      - name: Start container
+        run: |
+          docker run -d --rm \
+            --name hal-plus-ci \
+            -p 19001:9000 \
+            -e API_HOST=0.0.0.0 \
+            -e API_PORT=9000 \
+            hal-plus:ci
+
+      - name: Smoke test API health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:19001/api/health > /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Health check failed"
+          docker logs hal-plus-ci || true
+          exit 1
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker logs hal-plus-ci || true
+
+      - name: Stop container
+        if: always()
+        run: docker stop hal-plus-ci || true

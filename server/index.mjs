@@ -1,4 +1,7 @@
 import express from "express";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildBehaviorCatalogSummary,
   buildBehaviorPromptSupplement,
@@ -22,9 +25,49 @@ import { streamSSESections, streamSSEText, proxyOllamaStreamToSSE } from "./sse.
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const distDir = path.resolve(__dirname, "../dist");
+
 const PORT = Number(process.env.API_PORT || 9001);
 const HOST = process.env.API_HOST || "127.0.0.1";
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
+
+function isContainerRuntime() {
+  if (String(process.env.HAL_PLUS_CONTAINER_MODE || "").trim().toLowerCase() === "true") {
+    return true;
+  }
+
+  if (String(process.env.container || "").trim() !== "") {
+    return true;
+  }
+
+  if (fs.existsSync("/.dockerenv")) {
+    return true;
+  }
+
+  try {
+    const cgroup = fs.readFileSync("/proc/1/cgroup", "utf8");
+    return /(docker|podman|containerd|kubepods)/i.test(cgroup);
+  } catch {
+    return false;
+  }
+}
+
+function resolveOllamaBaseUrl() {
+  const configured = String(process.env.OLLAMA_BASE_URL || "").trim();
+  if (configured) {
+    return configured;
+  }
+
+  if (isContainerRuntime()) {
+    const hostAlias = String(process.env.OLLAMA_HOST_INTERNAL || "host.containers.internal").trim();
+    return `http://${hostAlias}:11434`;
+  }
+
+  return "http://127.0.0.1:11434";
+}
+
+const OLLAMA_BASE_URL = resolveOllamaBaseUrl();
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4";
 const OLLAMA_CONTEXT_WINDOW = Number(process.env.OLLAMA_CONTEXT_WINDOW || 32768);
 const POLICY_CACHE_TTL_MS = Number(process.env.HAL_POLICY_CACHE_TTL_MS || 30000);
@@ -298,6 +341,18 @@ app.post("/api/chat", async (req, res) => {
     res.end();
   }
 });
+
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) {
+      next();
+      return;
+    }
+
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+}
 
 app.listen(PORT, HOST, () => {
   console.log(`HAL Plus API running on http://${HOST}:${PORT}`);
