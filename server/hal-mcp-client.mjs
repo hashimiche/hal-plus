@@ -57,6 +57,8 @@ function createTimeout(label, timeoutMs) {
 export function createHalMcpClient(resolveHalExecutable, options = {}) {
   const timeoutMs = Number(options.timeoutMs || 10000);
   const discoveryTtlMs = Number(options.discoveryTtlMs || 30000);
+  const configuredMcpCommand = String(process.env.HAL_MCP_SERVER_CMD || "").trim();
+  const mcpHttpUrl = String(process.env.HAL_MCP_HTTP_URL || "").trim();
 
   const discoveryCache = {
     tools: { expiresAt: 0, value: null, promise: null },
@@ -65,10 +67,18 @@ export function createHalMcpClient(resolveHalExecutable, options = {}) {
   };
 
   async function runSession(executor) {
+    if (mcpHttpUrl) {
+      return runHttpSession(executor);
+    }
+
     const halExecutable = await resolveHalExecutable();
+    const spawnCommand = configuredMcpCommand ? "sh" : halExecutable;
+    const spawnArgs = configuredMcpCommand
+      ? ["-lc", configuredMcpCommand]
+      : ["mcp", "serve", "--transport", "stdio"];
 
     return new Promise((resolve, reject) => {
-      const child = spawn(halExecutable, ["mcp", "serve", "--transport", "stdio"], {
+      const child = spawn(spawnCommand, spawnArgs, {
         stdio: ["pipe", "pipe", "pipe"]
       });
 
@@ -184,6 +194,51 @@ export function createHalMcpClient(resolveHalExecutable, options = {}) {
         settle(reject, error instanceof Error ? error : new Error("HAL MCP session failed."));
       });
     });
+  }
+
+  async function runHttpSession(executor) {
+    let nextId = 1;
+
+    async function send(method, params, expectResponse = true) {
+      const id = expectResponse ? nextId++ : undefined;
+      const payload = {
+        jsonrpc: "2.0",
+        method,
+        ...(expectResponse ? { id } : {}),
+        ...(params ? { params } : {})
+      };
+
+      const response = await fetch(mcpHttpUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(`HAL MCP HTTP request failed (${response.status}): ${body || response.statusText}`);
+      }
+
+      if (!expectResponse) {
+        return null;
+      }
+
+      const result = await response.json();
+      if (result?.error) {
+        throw new Error(result.error.message || `HAL MCP HTTP method ${method} failed.`);
+      }
+
+      return result?.result;
+    }
+
+    await send("initialize", {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "hal-plus", version: "0.1.0" }
+    });
+    await send("notifications/initialized", {}, false);
+    return executor({ send });
   }
 
   async function loadCached(cacheKey, loader, forceRefresh = false) {

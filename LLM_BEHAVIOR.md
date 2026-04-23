@@ -29,12 +29,13 @@ UX contract
 - While an assistant response is streaming, use short progressive activity wording ending in "-ing" (for example, thinking, analyzing, processing) rather than static grounding-only phrasing.
 - The chat message area should auto-follow streamed output to the latest chunk so users do not need to manually scroll during long answers.
 - User-facing answers must stay concise by default. Include endpoints, lab surfaces, or extra links only when the user explicitly asks for them.
+- Documentation links in answers should follow the lightweight URL policy layer: intent-aware mapping first, then relevance-ranked fallback. Keep at most two links per answer.
 
 Response contract (operational prompts)
 1. Status baseline first.
 2. HAL-first command path.
 3. Verification commands.
-4. One official docs link by default.
+4. One to two documentation links maximum, chosen by intent policy (deep links preferred when available).
 5. Short notes only when they materially help.
 6. Keep MCP-grounded operational guidance first, then optionally add a brief model insight expansion (2-3 lines max) only if it adds practical context.
 7. For short status prompts (for example, "Is TFE running?"), answer in fast mode: `Answer: Yes|No|Unknown`, one evidence line from HAL MCP, and one primary check command; do not narrate internal MCP tool names.
@@ -52,6 +53,9 @@ Mandatory guardrails
 - For CSI workflows, include Enterprise prerequisite checks.
 - If runtime evidence is missing, say unknown and show checks.
 - For product answers, prefer HAL MCP outputs over hardcoded facts whenever the MCP tool surface can provide the same information.
+- If no high-confidence intent doc match exists, fall back to one official product root doc instead of showing broad or noisy link lists.
+- Container runtime behavior must assume Ollama stays on the host unless `OLLAMA_BASE_URL` explicitly says otherwise; do not imply an in-container Ollama requirement.
+- In container mode, prefer MCP HTTP transport when `HAL_MCP_HTTP_URL` is configured; stdio spawn paths are for local host/dev mode.
 
 Implementation map
 - HAL execution and binary resolution: server/hal-exec.mjs
