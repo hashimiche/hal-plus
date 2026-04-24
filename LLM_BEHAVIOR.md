@@ -8,6 +8,11 @@ Ownership split
 - HAL Plus owns routing, response structure, educational framing, and product workflow logic.
 - HAL MCP owns live field truth for the user's installed HAL version: current commands, flags, endpoints, runtime state, verification paths, and version-sensitive capability data.
 - Cross-repo change discipline: when AI-facing behavior changes touch MCP tools, skill metadata, prompt contracts, or grounding schemas, update both repositories (`hal-plus` and `hal`) in the same work cycle so UX logic and MCP truth stay aligned.
+- LLM-facing documentation discipline: when AI behavior, prompts, routing, skills, docs policy, or UX guidance changes, update the relevant LLM markdown surfaces in both repos in the same work cycle.
+- Minimum required LLM markdown sync surfaces are:
+  - `hal`: `.github/copilot-instructions.md`, `.github/copilot/skills/**/*.md`, `docs/**/*.md`, `LLM_CONTEXT.md`
+  - `hal-plus`: `llm/**/*.md`, `design*.md`, `UX_PARITY.md`, `LLM_BEHAVIOR.md`
+- Branch discipline: before making code changes in either repo, ask the user to create or confirm a working branch first. After the branch exists, keep code and LLM markdown updates aligned on that branch.
 - Behavior packs in HAL Plus may keep stable product knowledge, but runtime or version-sensitive claims must prefer HAL MCP.
 - If HAL MCP is unavailable, HAL Plus may still answer with stable product logic, but it must mark live runtime facts as unknown and show the HAL/MCP checks needed to confirm them.
 - New product work should default to this split unless there is a strong reason to keep a fact entirely inside HAL Plus.
