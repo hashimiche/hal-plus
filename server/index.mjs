@@ -68,8 +68,10 @@ function resolveOllamaBaseUrl() {
 }
 
 const OLLAMA_BASE_URL = resolveOllamaBaseUrl();
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen3.5";
+const OLLAMA_MODEL_LABEL = process.env.OLLAMA_MODEL_LABEL || OLLAMA_MODEL;
 const OLLAMA_CONTEXT_WINDOW = Number(process.env.OLLAMA_CONTEXT_WINDOW || 32768);
+const OLLAMA_KEEP_ALIVE = String(process.env.OLLAMA_KEEP_ALIVE || "5m").trim() || "5m";
 const POLICY_CACHE_TTL_MS = Number(process.env.HAL_POLICY_CACHE_TTL_MS || 30000);
 const resolveHalExecutable = createHalExecutableResolver();
 const halMcpClient = createHalMcpClient(resolveHalExecutable);
@@ -282,6 +284,7 @@ async function rankDocsForPrompt(prompt, context) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: OLLAMA_MODEL,
+        keep_alive: OLLAMA_KEEP_ALIVE,
         stream: false,
         messages: [
           {
@@ -340,7 +343,7 @@ async function docsForPromptWithFallback(prompt, context) {
 }
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, model: OLLAMA_MODEL, ollama: OLLAMA_BASE_URL });
+  res.json({ ok: true, model: OLLAMA_MODEL_LABEL, runtimeModel: OLLAMA_MODEL, ollama: OLLAMA_BASE_URL, keepAlive: OLLAMA_KEEP_ALIVE });
 });
 
 app.get("/api/status", async (_req, res) => {
@@ -374,7 +377,12 @@ app.get("/api/status", async (_req, res) => {
             ? "Observability stack · loki enabled"
             : "Observability stack · loki not enabled"
         },
-        llm: llmRuntime,
+        llm: {
+          ...llmRuntime,
+          model: OLLAMA_MODEL_LABEL,
+          runtimeModel: OLLAMA_MODEL,
+          keepAlive: OLLAMA_KEEP_ALIVE
+        },
         halMcp: {
           ok: mcpTransportOk,
           runtimeOk: mcpRuntimeOk,
@@ -477,11 +485,9 @@ app.post("/api/chat", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: OLLAMA_MODEL,
+        keep_alive: OLLAMA_KEEP_ALIVE,
         stream: true,
-        messages,
-        options: {
-          temperature: 0.2
-        }
+        messages
       })
     });
 

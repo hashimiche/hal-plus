@@ -41,7 +41,7 @@ type HalProduct = {
 type LiveStatus = {
   runtime: {
     loki: { ok: boolean; detail: string };
-    llm: { ok: boolean; detail: string; model?: string; contextWindow?: number };
+    llm: { ok: boolean; detail: string; model?: string; runtimeModel?: string; contextWindow?: number; keepAlive?: string };
     halMcp: { ok: boolean; detail: string; missingTools?: string[] };
   };
   products: HalProduct[];
@@ -680,6 +680,7 @@ export default function App() {
           <div className="chip-overlay-tags">
             <span>{liveStatus?.runtime.llm.model || "model unknown"}</span>
             <span>{contextWindow.toLocaleString()} token window</span>
+            {liveStatus?.runtime.llm.keepAlive ? <span>{`idle unload ${liveStatus.runtime.llm.keepAlive}`}</span> : null}
           </div>
         </div>
       );
