@@ -102,10 +102,10 @@ export function createPolicyEngine(mcpClient, ttlMs) {
       "Always answer in this structure:",
       "1) Status baseline (or explicit unknown)",
       "2) HAL-first command path",
-      "3) Official documentation links",
+      "3) Official documentation links (real https:// URLs as markdown links only; at most two; omit section if no exact URL is known)",
       "4) Verification commands",
       `Mandatory MCP prefetch tools before operational claims: ${requiredTools}.`,
-      "Do not fabricate product state, versions, or endpoints.",
+      "IMPORTANT: Do not fabricate product state, versions, endpoints, or documentation URLs. Only include URLs you are certain of.",
       "If runtime evidence is missing, say unknown and ask for or run checks first.",
       "Use markdown with runnable bash code blocks when relevant."
     ];

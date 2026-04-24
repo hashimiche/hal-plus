@@ -11,6 +11,8 @@ function isOperationalPrompt(prompt) {
     "deploy",
     "steps",
     "how",
+    "what",
+    "check",
     "troubleshoot",
     "fix",
     "test",
@@ -30,6 +32,13 @@ function isOperationalPrompt(prompt) {
     "dashboard",
     "grafana",
     "prometheus",
+    "metrics",
+    "monitor",
+    "monitoring",
+    "observability",
+    "audit",
+    "wire",
+    "wiring",
     "reachable"
   ];
   return opsWords.some((w) => lower.includes(w));
@@ -60,7 +69,31 @@ function isGenericStatusMessage(message) {
   );
 }
 
-function statusEvidenceText(grounding) {
+function hasEngineUnavailableSignal(grounding) {
+  const text = String([
+    grounding?.status?.message || "",
+    grounding?.baseline?.message || "",
+    grounding?.component?.data?.status || "",
+    grounding?.component?.data?.state || ""
+  ].join(" ")).toLowerCase();
+
+  return text.includes("no container engine found");
+}
+
+function probeStateForContext(probeProducts, context) {
+  const productName = String(
+    context?.primary?.id || context?.product?.id || context?.primary?.label || context?.product?.label || ""
+  ).toLowerCase();
+  if (!productName || !Array.isArray(probeProducts)) return null;
+
+  const probe = probeProducts.find((p) => {
+    const n = String(p?.name || "").toLowerCase();
+    return n === productName || n.includes(productName) || productName.includes(n);
+  });
+  return probe || null;
+}
+
+function statusEvidenceText(grounding, probeProducts = [], context = null) {
   const runtimeState = statusRuntimeState(grounding);
   if (runtimeState === "running") {
     return "HAL MCP runtime reports Terraform Enterprise state: running.";
@@ -70,6 +103,15 @@ function statusEvidenceText(grounding) {
   }
   if (runtimeState === "partial") {
     return "HAL MCP runtime reports Terraform Enterprise state: partial.";
+  }
+
+  if (hasEngineUnavailableSignal(grounding)) {
+    const probe = probeStateForContext(probeProducts, context);
+    if (probe) {
+      const stateLabel = probe.state === "running" ? "reachable" : probe.state === "not-deployed" ? "not reachable" : "state unknown";
+      return `Probe: ${probe.name} endpoint is ${stateLabel}. Run \`hal ${String(probe.name).toLowerCase()} status\` for full details (version, health, features).`;
+    }
+    return "MCP baseline could not query container runtime; run the product status command for authoritative state.";
   }
 
   const statusMessage = grounding?.status?.message;
@@ -89,7 +131,7 @@ function statusEvidenceText(grounding) {
   );
 }
 
-function statusVerdictFromEvidence(grounding) {
+function statusVerdictFromEvidence(grounding, probeProducts = [], context = null) {
   const runtimeState = statusRuntimeState(grounding);
   if (runtimeState === "running") {
     return { verdict: "Yes", confidence: "high" };
@@ -99,6 +141,13 @@ function statusVerdictFromEvidence(grounding) {
   }
   if (runtimeState === "partial") {
     return { verdict: "Unknown", confidence: "medium" };
+  }
+
+  if (hasEngineUnavailableSignal(grounding)) {
+    const probe = probeStateForContext(probeProducts, context);
+    if (probe?.state === "running") return { verdict: "Yes", confidence: "medium" };
+    if (probe?.state === "not-deployed") return { verdict: "No", confidence: "medium" };
+    return { verdict: "Unknown", confidence: "low" };
   }
 
   const text = String([
@@ -400,7 +449,7 @@ function scoreResourceForPrompt(prompt, resource) {
   return score;
 }
 
-export async function deterministicIntentResponse(prompt, preloadedContext, grounding, coverage = null, docSearch = null) {
+export async function deterministicIntentResponse(prompt, preloadedContext, grounding, coverage = null, docSearch = null, probeProducts = []) {
   if (!prompt || !isOperationalPrompt(prompt)) {
     return null;
   }
@@ -428,9 +477,34 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
     uniqueStrings([...(product?.statusCommands || []), ...(behavior.statusCommands || [])]),
     grounding?.status?.commands || grounding?.baseline?.commands || []
   );
+  // Filter grounding plan commands to only those that belong to the matched product/subcommand,
+  // preventing cross-product command pollution (e.g. obs commands leaking into a vault k8s intent).
+  const productHints = uniqueStrings([
+    behavior.product,
+    behavior.subcommand && behavior.subcommand !== "product" ? behavior.subcommand : null,
+    product?.product
+  ]).map((s) => String(s || "").toLowerCase()).filter(Boolean);
+  // For subcommand-specific behaviors (e.g. vault k8s), grounding action commands must match the
+  // subcommand name to prevent sibling-subcommand pollution (e.g. "hal vault audit" or "hal obs status"
+  // appearing in a k8s flow Run section). Status commands belong only in Check, not Run.
+  // For product-level behaviors use the broader product hints.
+  const actionCommandHints =
+    behavior.subcommand && behavior.subcommand !== "product"
+      ? [behavior.subcommand]
+      : productHints;
+  const planCommandsFiltered = (grounding?.plan?.commands || []).filter((cmd) => {
+    if (!actionCommandHints.length) return true;
+    const lower = String(cmd || "").toLowerCase();
+    return actionCommandHints.some((hint) => lower.includes(hint));
+  });
+  const skillCommandsFiltered = (grounding?.skill?.commands || []).filter((cmd) => {
+    if (!actionCommandHints.length) return true;
+    const lower = String(cmd || "").toLowerCase();
+    return actionCommandHints.some((hint) => lower.includes(hint));
+  });
   const actionCommandsRaw = mergeBehaviorCommands(
     behavior.actionCommands || [],
-    uniqueStrings([...(grounding?.plan?.commands || []), ...(grounding?.skill?.commands || [])])
+    uniqueStrings([...planCommandsFiltered, ...skillCommandsFiltered])
   );
   const verifyCommandsRaw = mergeBehaviorCommands(behavior.verifyCommands || [], grounding?.verify?.commands || []);
   const notesRaw = uniqueStrings([
@@ -500,10 +574,9 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
   const shouldIncludeLinks = includeLinksInAnswer(prompt);
 
   if (isStatusQuestion(prompt)) {
-    const verdict = statusVerdictFromEvidence(grounding);
-    const evidence = statusEvidenceText(grounding);
+    const verdict = statusVerdictFromEvidence(grounding, probeProducts, context);
+    const evidence = statusEvidenceText(grounding, probeProducts, context);
     const checkCommand = pickPrimaryStatusCommand(prompt, behavior, product, statusCommands, actionCommands);
-    const verifyCommand = pickVerifyStatusCommand(prompt, behavior, product, verifyCommands, checkCommand);
 
     const statusLines = [
       `Answer: ${verdict.verdict}`,
@@ -515,19 +588,19 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
       "```"
     ];
 
-    if (verifyCommand) {
-      statusLines.push("", "Verify:", "```bash", verifyCommand, "```");
-    }
-
-    if (verdict.verdict === "Unknown") {
-      statusLines.push("", "Note: HAL MCP returned partial status; run the check command above for a fresh product-specific status line.");
-    }
-
     return statusLines.join("\n");
   }
 
+  // For enable/deploy/configure intents, 'Status: status collected' is unhelpful.
+  // Instead show a Preflight check when the baseline is generic, otherwise show real baseline.
+  const isGenericBaseline = !groundedBaseline || isGenericStatusMessage(groundedBaseline);
+  const preflightCommand = statusCommands.length > 0 ? statusCommands[0] : null;
+  const firstLines = isGenericBaseline && preflightCommand
+    ? ["Preflight:", "```bash", preflightCommand, "```"]
+    : [`Status: ${baselineState}`];
+
   const lines = [
-    `Status: ${baselineState}`,
+    ...firstLines,
     "",
     "Run:",
     "```bash",

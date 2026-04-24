@@ -82,6 +82,147 @@ function missingCoreMcpTools(runtimeCatalog, runtimePolicy = null) {
   return required.filter((toolName) => !available.has(toolName));
 }
 
+function isEngineUnavailableBaselineError(message) {
+  const text = String(message || "").toLowerCase();
+  return text.includes("no container engine found");
+}
+
+// Probe a product health endpoint — tries each URL candidate in order and returns
+// true on the first reachable one. Accepts any HTTP response (including Vault-style
+// non-200 health codes) as "up"; only network errors count as "down".
+async function probeAny(candidates, { timeoutMs = 3000 } = {}) {
+  for (const url of candidates) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      // Any HTTP response means the service is up (Vault returns 429/472/473/503 for standby/sealed)
+      if (response.status > 0) return true;
+    } catch {
+      // network error or timeout — try next candidate
+    }
+  }
+  return false;
+}
+
+// For each product, define:
+//   containerHost  — hostname reachable on hal-net (container-to-container)
+//   localhostHost  — address reachable from the host (npm run dev)
+//   healthPath     — standard health or ready endpoint
+//   uiEndpoint     — display URL shown in the UI
+//   name           — display label
+const PRODUCT_PROBES = [
+  {
+    name: "Consul",
+    containerHost: "hal-consul",
+    localhostHost: "127.0.0.1",
+    port: 8500,
+    healthPath: "/v1/status/leader",
+    uiEndpoint: "http://consul.localhost:8500"
+  },
+  {
+    name: "Vault",
+    containerHost: "hal-vault",
+    localhostHost: "127.0.0.1",
+    port: 8200,
+    healthPath: "/v1/sys/health",
+    uiEndpoint: "http://vault.localhost:8200"
+  },
+  {
+    name: "Boundary",
+    containerHost: "hal-boundary",
+    localhostHost: "127.0.0.1",
+    port: 9200,
+    healthPath: "/v1/health",
+    uiEndpoint: "http://boundary.localhost:9200"
+  },
+  {
+    name: "Terraform Enterprise",
+    containerHost: "hal-tfe",
+    localhostHost: "127.0.0.1",
+    port: 8443,
+    healthPath: "/_health_check",
+    scheme: "https",
+    uiEndpoint: "https://tfe.localhost:8443"
+  },
+  {
+    name: "Grafana",
+    containerHost: "hal-grafana",
+    localhostHost: "127.0.0.1",
+    port: 3000,
+    healthPath: "/api/health",
+    uiEndpoint: "http://grafana.localhost:3000"
+  },
+  {
+    name: "Prometheus",
+    containerHost: "hal-prometheus",
+    localhostHost: "127.0.0.1",
+    port: 9090,
+    healthPath: "/-/healthy",
+    uiEndpoint: "http://prometheus.localhost:9090"
+  },
+  {
+    name: "Loki",
+    containerHost: "hal-loki",
+    localhostHost: "127.0.0.1",
+    port: 3100,
+    healthPath: "/ready",
+    uiEndpoint: "http://loki.localhost:3100"
+  }
+];
+
+async function fallbackProductsFromEndpoints() {
+  const results = await Promise.all(
+    PRODUCT_PROBES.map(async (product) => {
+      const scheme = product.scheme || "http";
+      const candidates = [
+        `${scheme}://${product.containerHost}:${product.port}${product.healthPath}`,
+        `${scheme}://${product.localhostHost}:${product.port}${product.healthPath}`
+      ];
+      const up = await probeAny(candidates);
+      return {
+        name: product.name,
+        state: up ? "running" : "not-deployed",
+        endpoint: product.uiEndpoint,
+        version: "-",
+        features: []
+      };
+    })
+  );
+
+  // Group Grafana/Prometheus/Loki into a single Observability product row
+  const obs = results.filter((r) => ["Grafana", "Prometheus", "Loki"].includes(r.name));
+  const obsUp = obs.some((r) => r.state === "running");
+  const obsFeatures = obs.map((r) => `${r.name.toLowerCase()}:${r.state === "running" ? "enabled" : "disabled"}`);
+  const obsRow = {
+    name: "Observability",
+    state: obsUp ? "running" : "not-deployed",
+    endpoint: "http://grafana.localhost:3000",
+    version: "-",
+    features: obsFeatures
+  };
+
+  // Nomad: try the web UI / HTTP API on both hal-net name and localhost
+  const nomadUp = await probeAny([
+    "http://hal-nomad:4646/v1/agent/health",
+    "http://127.0.0.1:4646/v1/agent/health"
+  ]);
+  const nomadRow = {
+    name: "Nomad",
+    state: nomadUp ? "running" : "not-deployed",
+    endpoint: "http://nomad.localhost:4646",
+    version: "-",
+    features: []
+  };
+
+  const coreProducts = results.filter((r) => !["Grafana", "Prometheus", "Loki"].includes(r.name));
+  const nomadIndex = coreProducts.findIndex((r) => r.name === "Boundary");
+  coreProducts.splice(nomadIndex + 1, 0, nomadRow);
+
+  return [...coreProducts, obsRow];
+}
+
 function resolveBehaviorContextFromConversation(inputMessages, prompt) {
   const direct = resolveBehaviorContext(prompt);
   if (direct?.primary) {
@@ -210,14 +351,20 @@ app.get("/api/status", async (_req, res) => {
       getOllamaRuntime(OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_CONTEXT_WINDOW)
     ]);
     const runtime = baseline?.structuredContent?.data?.runtime || null;
-    const products = baselineProductsToUi(runtime);
+    const baselineProducts = baselineProductsToUi(runtime);
+    const products = baselineProducts.length > 0 ? baselineProducts : await fallbackProductsFromEndpoints();
     const lokiReady = lokiStateFromBaseline(runtime);
     const capabilityCount = Array.isArray(runtimeCatalog?.actions) ? runtimeCatalog.actions.length : 0;
     const toolCount = Array.isArray(runtimeCatalog?.toolNames) ? runtimeCatalog.toolNames.length : 0;
     const skillsCount = Number(runtimeCatalog?.skills?.skills_count || 0);
     const missingTools = missingCoreMcpTools(runtimeCatalog, null);
     const discoveryAvailable = Boolean(runtimeCatalog);
-    const mcpOk = !baseline?.isError && discoveryAvailable && missingTools.length === 0;
+    const mcpTransportOk = discoveryAvailable && missingTools.length === 0;
+    const mcpRuntimeOk = !baseline?.isError;
+    const baselineMessage = typeof baseline?.structuredContent?.message === "string"
+      ? baseline.structuredContent.message.trim()
+      : "";
+    const engineUnavailable = isEngineUnavailableBaselineError(baselineMessage);
 
     res.json({
       runtime: {
@@ -229,9 +376,16 @@ app.get("/api/status", async (_req, res) => {
         },
         llm: llmRuntime,
         halMcp: {
-          ok: mcpOk,
-          detail: mcpOk
+          ok: mcpTransportOk,
+          runtimeOk: mcpRuntimeOk,
+          detail: mcpTransportOk && mcpRuntimeOk
             ? `HAL MCP runtime tools ready (${toolCount} tools, ${capabilityCount} actions, ${skillsCount} skills)`
+            : mcpTransportOk && !mcpRuntimeOk
+              ? engineUnavailable
+                ? `HAL MCP reachable over HTTP (${toolCount} tools)`
+                : baselineMessage
+                ? `HAL MCP reachable over HTTP, but runtime baseline failed: ${baselineMessage}`
+                : "HAL MCP reachable over HTTP, but runtime baseline failed"
             : !discoveryAvailable
               ? "HAL MCP discovery unavailable"
               : missingTools.length > 0
@@ -289,7 +443,10 @@ app.post("/api/chat", async (req, res) => {
       docsForPromptWithFallback(prompt, behaviorContext).catch(() => ({ docs: [], chunks: [], mode: "error" }))
     ]);
     const behaviorCoverage = evaluateBehaviorMcpCoverage(behaviorContext, runtimeCatalog, runtimePolicy);
-    const behaviorGrounding = await gatherBehaviorGrounding(behaviorContext, halMcpClient, runtimeCatalog, prompt).catch(() => null);
+    const [behaviorGrounding, probeProducts] = await Promise.all([
+      gatherBehaviorGrounding(behaviorContext, halMcpClient, runtimeCatalog, prompt).catch(() => null),
+      fallbackProductsFromEndpoints().catch(() => [])
+    ]);
     const systemPrompt = buildSystemPrompt(
       runtimePolicy,
       [
@@ -309,7 +466,7 @@ app.post("/api/chat", async (req, res) => {
         .map((m) => ({ role: m.role, content: m.content }))
     ];
 
-    const deterministicReply = await deterministicIntentResponse(prompt, behaviorContext, behaviorGrounding, behaviorCoverage, docSearch);
+    const deterministicReply = await deterministicIntentResponse(prompt, behaviorContext, behaviorGrounding, behaviorCoverage, docSearch, probeProducts);
     if (deterministicReply) {
       await streamSSESections(res, deterministicReply, { delayMs: 80 });
       return;
