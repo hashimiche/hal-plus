@@ -236,7 +236,7 @@ export async function gatherBehaviorGrounding(context, mcpClient, runtimeCatalog
       calls.push(mcpClient.callTool(selectedTool, { component: config.verifyComponent }).then((value) => ["verify", value]));
     }
   }
-  const resolvedIntent = String(userPrompt || "").trim() || config.planIntent || "";
+  const resolvedIntent = config.planIntent || String(userPrompt || "").trim() || "";
   if (resolvedIntent) {
     const selectedTool = pickAvailableTool(runtimeCatalog, "hal_plan_deploy", ["plan_next_steps"]);
     if (selectedTool) {
@@ -310,5 +310,7 @@ export function buildMcpCoveragePromptSupplement(coverage) {
 }
 
 export function mergeBehaviorCommands(behaviorCommands, groundingCommands) {
-  return uniqueStrings([...(groundingCommands || []), ...(behaviorCommands || [])]);
+  // Behavior file commands are curated for this exact intent and take priority.
+  // Grounding commands from MCP supplement with anything not already present.
+  return uniqueStrings([...(behaviorCommands || []), ...(groundingCommands || [])]);
 }

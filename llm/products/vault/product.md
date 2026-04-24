@@ -30,8 +30,8 @@
   },
   "helpCommand": ["vault"],
   "statusCommands": [
-    "hal status",
-    "hal vault status"
+    "hal vault status",
+    "hal status"
   ],
   "actionCommands": [
     "hal vault status",

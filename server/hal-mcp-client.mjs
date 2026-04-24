@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
-const MCP_PROTOCOL_VERSION = "2024-11-05";
+const MCP_PROTOCOL_VERSION_STDIO = "2024-11-05";
+const MCP_PROTOCOL_VERSION_HTTP = "2025-03-26";
 
 function frameMessage(message) {
   const payload = JSON.stringify(message);
@@ -180,7 +181,7 @@ export function createHalMcpClient(resolveHalExecutable, options = {}) {
       Promise.race([
         (async () => {
           await send("initialize", {
-            protocolVersion: MCP_PROTOCOL_VERSION,
+            protocolVersion: MCP_PROTOCOL_VERSION_STDIO,
             capabilities: {},
             clientInfo: { name: "hal-plus", version: "0.1.0" }
           });
@@ -233,7 +234,7 @@ export function createHalMcpClient(resolveHalExecutable, options = {}) {
     }
 
     await send("initialize", {
-      protocolVersion: MCP_PROTOCOL_VERSION,
+      protocolVersion: MCP_PROTOCOL_VERSION_HTTP,
       capabilities: {},
       clientInfo: { name: "hal-plus", version: "0.1.0" }
     });
