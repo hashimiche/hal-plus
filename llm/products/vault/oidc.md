@@ -24,7 +24,11 @@
       "vault sso",
       "human sso",
       "oidc callback",
-      "browser login"
+      "browser login",
+      " oidc ",
+      "oidc lab",
+      "oidc method",
+      "enable oidc"
     ],
     "all": []
   },
@@ -95,13 +99,45 @@
 }
 -->
 
-# Vault OIDC in HAL
+When you run `hal vault oidc enable`, HAL brings up a Keycloak container and wires Vault's OIDC auth method to use it for human browser-based login.
 
-Use this pack for Keycloak-backed human login, browser redirects, and OIDC group-mapping questions.
+### What gets created
 
-## Operator Rules
+| Component | Value |
+|---|---|
+| Auth mount | `auth/oidc/` |
+| KV mount | `kv-oidc/` |
+| Policies | `admin`, `user-ro` |
+| Demo users | `alice`, `bob` |
+| Keycloak realm | `hal` |
+| Discovery URL | `http://keycloak.localhost:8081/realms/hal` |
+| OIDC client | `vault` |
+| External groups | `admin`, `user-ro` (Keycloak groups → Vault identity groups) |
 
-- Prefer `hal vault oidc --enable` as the setup command.
-- Explain that this is the human SSO path and that JWT is the CI path.
-- Keep troubleshooting focused on the Keycloak realm, callback URL, and role config instead of generic auth narration.
-- Mention the Keycloak UI when users want to inspect groups or realm objects directly.
+### Inspect the OIDC config
+
+```shell
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='root'
+
+# Confirm the OIDC auth method is mounted and points to Keycloak
+vault read auth/oidc/config
+
+# Inspect the default role (allowed_redirect_uris, groups_claim, token_policies)
+vault read auth/oidc/role/default
+
+# Check that external groups are mapped
+vault list identity/group
+```
+
+### Test browser login
+
+```shell
+# Opens a browser window — Vault will redirect to Keycloak
+vault login -method=oidc
+# Login as alice or bob; Vault issues a token scoped to the matching policy
+```
+
+### Troubleshoot callback errors
+
+The allowed callback URL must be `http://localhost:8250/oidc/callback`. If it doesn't match the Keycloak client config, login fails with a redirect_uri mismatch error. Check the Keycloak `hal` realm → Clients → `vault` → Valid redirect URIs.

@@ -36,13 +36,34 @@ UX contract
 - User-facing answers must stay concise by default. Include endpoints, lab surfaces, or extra links only when the user explicitly asks for them.
 - Documentation links in answers should follow the lightweight URL policy layer: intent-aware mapping first, then relevance-ranked fallback. Keep at most two links per answer.
 
-Response contract (operational prompts)
-1. Status baseline first — for **enable/configure/deploy** intents this is a `Preflight:` check command (e.g. `hal vault status`) rather than a raw baseline message, because the baseline is typically generic and unhelpful for action flows.
+Response contract — intent routes
+HAL Plus uses three distinct answer routes. Route selection happens before any output is built.
+See `llm/ANSWER_QUALITY.md` for the full spec, examples, and body-content authoring rules.
+
+**Route A — Knowledge / Factual**
+- Trigger: user asks a conceptual or prerequisite question ("does X need a license?", "is X enterprise-only?", "what is X?").
+- Format: 2–3 sentence prose answer + one HAL command (if relevant) + one doc link. No Preflight/Run/Check/Verify.
+- Detection function: `isKnowledgeQuestion(prompt)` in `deterministic-engine.mjs`.
+
+**Route B — Operational / Deploy / Configure**
+- Trigger: user wants to run, enable, deploy, or configure something.
+- Format: Preflight → Run → Check → Verify → Docs → Tips (unchanged from prior contract).
+- New addition: when prompt contains a code/internals signal (`isCodeIntent`), append a `## Under the hood` section drawn from the behavior file `body` field. Model supplement cap is lifted for code-intent prompts.
+- **Hybrid mode**: for operational (non-status) answers, the deterministic block is sent to Qwen as grounding. Qwen writes 1–2 sentences of intro prose, then embeds the grounded block verbatim, then optionally adds a brief closing insight. A `{ type: "meta", source: "hybrid" }` SSE event marks the answer as MCP-grounded; the frontend renders a subtle left-border accent + hoverable `MCP` chip on code blocks.
+- Status/health checks bypass hybrid mode and stream the deterministic block directly.
+- Detection function: `isCodeIntent(prompt)` in `deterministic-engine.mjs`.
+
+**Route C — Follow-up / Contextual**
+- Trigger: short prompt with no behavior match, or starts with "and", "what about", "on a", "same for".
+- Format: skip deterministic entirely; forward last-matched behavior id + body as grounding to the model, then let the model answer freely.
+- Requires `lastMatchedBehaviorId` tracking across the request handling path in `server/index.mjs`.
+
+1. For **enable/configure/deploy** intents (Route B) this is a `Preflight:` check command (e.g. `hal vault status`) rather than a raw baseline message, because the baseline is typically generic and unhelpful for action flows.
 2. HAL-first command path.
 3. Verification commands.
 4. One to two documentation links maximum, chosen by intent policy (deep links preferred when available).
 5. Short notes only when they materially help.
-6. Keep MCP-grounded operational guidance first, then optionally add a brief model insight expansion (2-3 lines max) only if it adds practical context.
+6. Keep MCP-grounded operational guidance first, then optionally add a brief model insight expansion (2-3 lines max) only if it adds practical context — **except** when `isCodeIntent` is true, in which case the model may emit full code blocks using behavior `body` content and official docs as grounding.
 7. For short status prompts (for example, "Is TFE running?"), answer in fast mode: `Answer: Yes|No|Unknown`, one evidence line from HAL MCP, and one primary check command; do not narrate internal MCP tool names.
 8. If MCP baseline evidence contains "no container engine found", force `Answer: Unknown` (never infer `Yes` from generic words like "running" inside that error), and set evidence to a short probe/baseline limitation statement plus product-specific check command (for example `hal vault status`).
 
@@ -96,7 +117,10 @@ Implementation map
 - HAL MCP client (stdio + HTTP): `server/hal-mcp-client.mjs`
 - MCP-backed behavior grounding: `server/behavior-grounding.mjs`
 - Runtime policy and system prompt: `server/policy-engine.mjs`
-- Deterministic workflows and educational output: `server/deterministic-engine.mjs`
+- Deterministic workflows, intent routing, educational output: `server/deterministic-engine.mjs`
 - Runtime status parsing and `baselineProductsToUi`: `server/runtime-status.mjs`
 - Product health probe fallback and `/api/status` logic: `server/index.mjs`
 - SSE output handling: `server/sse.mjs`
+- Behavior file body content (under-the-hood code blocks): `llm/products/**/*.md`
+  - **Body authoring rule**: do NOT start a body section with a `# Title` heading. The deterministic engine wraps body content inside a `## Under the hood` section header; an H1 inside an H2 produces broken visual hierarchy. Start directly with prose or a `###` subsection.
+- Answer quality contract and intent routing spec: `llm/ANSWER_QUALITY.md`

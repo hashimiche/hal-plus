@@ -98,8 +98,6 @@
 }
 -->
 
-# Vault Deploy in HAL
-
 Use this pack for bring-up, re-bring-up, or edition-selection questions for Vault.
 
 ## Operator Rules

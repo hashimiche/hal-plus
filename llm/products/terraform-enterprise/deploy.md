@@ -61,6 +61,18 @@
   ],
   "resources": [
     {
+      "title": "TFE Deploy Documentation",
+      "href": "https://developer.hashicorp.com/terraform/enterprise/deploy",
+      "kind": "official",
+      "description": "Deployment options, requirements, and architecture overview."
+    },
+    {
+      "title": "TFE License Requirements",
+      "href": "https://developer.hashicorp.com/terraform/enterprise/requirements/license",
+      "kind": "official",
+      "description": "License format, validation, and environment variable requirements."
+    },
+    {
       "title": "Terraform Enterprise Docs",
       "href": "https://developer.hashicorp.com/terraform/enterprise",
       "kind": "official",
@@ -120,14 +132,55 @@
 }
 -->
 
-# Terraform Enterprise Deploy
+TFE is an enterprise product — it **requires a valid `TFE_LICENSE` string** in the environment before `hal terraform create` will even attempt to start the containers.
 
-Use this pack when the user wants to boot, re-boot, or explain the Terraform Enterprise base stack.
+### License and preflight
 
-## Key Operator Rules
+```shell
+# Set the license before any deploy command
+export TFE_LICENSE='<your_license_string>'
 
-- Mention `hal capacity` before deployment because TFE is resource intensive.
-- Be explicit that `TFE_LICENSE` is mandatory.
-- State that the HTTPS endpoint is `https://tfe.localhost:8443` and the certificate is self-signed.
-- If observability comes later, use explicit lifecycle commands: `hal obs create` then `hal terraform obs create`.
-- Pull current deploy syntax, current endpoint context, and verification commands from HAL MCP when available.
+# Check you have enough resources (TFE is one of the heaviest HAL deployments)
+hal capacity
+```
+
+### What gets created
+
+- TFE application container behind `hal-tfe-proxy` (HTTPS on `https://tfe.localhost:8443`)
+- MinIO for object storage (`http://127.0.0.1:19000` API, `http://127.0.0.1:19001` console)
+- PostgreSQL for the TFE database
+- Redis for the task worker cache
+- Initial admin user: `haladmin` / `hal9000FTW` (unless overridden)
+- Foundation org `hal` and initial project/workspace wiring via HAL bootstrap
+
+### Verify the deployment
+
+```shell
+# HAL-first check — confirms containers, health endpoint, and HTTPS reachability
+hal terraform status
+
+# Direct health check against the proxied HTTPS endpoint
+curl -k -I https://tfe.localhost:8443/_health_check
+# Expect: HTTP/2 200
+
+# Confirm app redirect works (catches proxy misconfiguration)
+curl -k -I https://tfe.localhost:8443/app
+```
+
+### Deploy a second TFE instance (twin)
+
+```shell
+# Reuses the same MinIO/Redis/PostgreSQL ecosystem
+hal terraform create --twin
+hal terraform status
+```
+
+### Add observability (not auto-wired at deploy time)
+
+```shell
+# Observability stack must be deployed first, then TFE wired into it
+hal obs create
+hal terraform obs create
+```
+
+The TFE certificate is self-signed — accept the browser warning on first access to `https://tfe.localhost:8443`.

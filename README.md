@@ -7,6 +7,17 @@ HAL Plus is a local web UI layer for HAL (HashiCorp Academy Labs), with chat pow
 - Express (local API bridge)
 - Ollama model backend (default: `qwen3.5`)
 
+## Model presets
+
+HAL Plus ships with two curated Ollama presets, configured via `hal plus create --model`:
+
+| Preset | Best for | Notes |
+|---|---|---|
+| `qwen3.5` *(default)* | General lab Q&A, MCP-grounded answers | 32k context window; `think: false` for operational answers keeps latency low |
+| `gemma4` | Faster cold starts, lighter machines | Lower VRAM requirement |
+
+Both presets are managed by HAL — no `ollama pull` needed. Ollama must be running on the host (`ollama serve`) before calling `hal plus create`.
+
 ## Quick Start
 1. Install dependencies:
    ```bash

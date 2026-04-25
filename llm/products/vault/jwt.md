@@ -96,13 +96,41 @@
 }
 -->
 
-# Vault JWT in HAL
+When you run `hal vault jwt --enable`, HAL wires Vault's JWT auth method to a local GitLab instance and creates bound-claims roles for CI pipeline authentication.
 
-Use this pack for GitLab-backed JWT auth, CI token login, and bound-claims troubleshooting.
+### What gets configured
 
-## Operator Rules
+- JWT auth mount bound to the local GitLab JWKS endpoint
+- Roles with `bound_claims` that enforce protected tag constraints and project-level guards
+- This is the **CI/pipeline** auth path — for human SSO use `hal vault oidc --enable`
 
-- Prefer `hal vault jwt --enable` for initial setup.
-- Mention the protected tag guardrail when users ask why pipeline auth fails.
-- Keep the answer HAL-first, then use the JWT auth docs for claim-level explanation.
-- If the user needs human SSO, route to `hal vault oidc --enable` instead.
+### Inspect the JWT config
+
+```shell
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='root'
+
+# Confirm the JWT auth method is mounted and points to the local GitLab issuer
+vault read auth/jwt/config
+
+# List and inspect roles
+vault list auth/jwt/role
+vault read auth/jwt/role/<role-name>
+```
+
+### Test a token login (simulate CI)
+
+```shell
+# Obtain a GitLab CI_JOB_JWT token and attempt login
+vault write auth/jwt/login \
+  role=<role-name> \
+  jwt=<CI_JOB_JWT>
+```
+
+### Why pipeline auth fails — bound claims
+
+If login is rejected, the JWT claims must match the role's `bound_claims`. Common guards in this lab:
+- `ref_protected: true` — pipeline must run on a protected branch or tag
+- `project_path` — must match the exact GitLab project path
+
+Use `vault read auth/jwt/role/<role-name>` to see the exact claim constraints.

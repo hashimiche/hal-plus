@@ -582,6 +582,131 @@ body {
   padding-top: 34px;
 }
 
+/* MCP-grounded code blocks: subtle left accent border */
+.code-block-wrap.mcp-grounded {
+  border-left: 2px solid color-mix(in srgb, var(--accent-2, #7c3aed) 55%, transparent 45%);
+  border-radius: 0 6px 6px 0;
+  margin-left: 0;
+}
+
+/* Chip group for MCP + topic chips — sits top-left of the code block */
+.mcp-source-chips {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* MCP source chip */
+.mcp-source-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: color-mix(in srgb, var(--accent-2, #7c3aed) 80%, var(--text) 20%);
+  background: color-mix(in srgb, var(--accent-2, #7c3aed) 10%, var(--panel) 90%);
+  border: 1px solid color-mix(in srgb, var(--accent-2, #7c3aed) 30%, transparent 70%);
+  cursor: default;
+  position: relative;
+}
+
+/* Topic chip — matches MCP chip but uses a neutral tint */
+.mcp-topic-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--panel) 88%, var(--border) 12%);
+  border: 1px solid var(--border);
+  cursor: default;
+}
+
+.mcp-source-tooltip {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  white-space: nowrap;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  z-index: 30;
+}
+
+.mcp-source-chip:hover .mcp-source-tooltip {
+  display: block;
+}
+
+/* Shift copy button right when MCP chips are present */
+.code-block-wrap.mcp-grounded .code-copy-btn {
+  right: 10px;
+  left: auto;
+}
+
+/* Product chip overlay — feature list */
+.chip-overlay-features {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.feature-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.feature-dot {
+  font-size: 0.6rem;
+  line-height: 1;
+}
+
+.feature-enabled .feature-dot {
+  color: #22c55e;
+}
+
+.feature-enabled {
+  color: var(--text);
+}
+
+.feature-disabled .feature-dot {
+  color: var(--muted);
+  opacity: 0.4;
+}
+
+/* MCP chip URL line */
+.chip-mcp-url {
+  font-family: monospace;
+  font-size: 0.76rem !important;
+  opacity: 0.75;
+}
+
+
+
+
+
 .code-copy-btn {
   position: absolute;
   top: 8px;

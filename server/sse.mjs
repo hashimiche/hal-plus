@@ -30,10 +30,12 @@ export async function streamSSESections(res, text, options = {}) {
   res.end();
 }
 
-export async function proxyOllamaStreamToSSE(res, ollamaResponse) {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
+export async function proxyOllamaStreamToSSE(res, ollamaResponse, options = {}) {
+  if (!options.headersAlreadySet) {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+  }
 
   const reader = ollamaResponse.body.getReader();
   const decoder = new TextDecoder();
