@@ -17,7 +17,7 @@ import {
 import { createHalExecutableResolver } from "./hal-exec.mjs";
 import { createHalMcpClient } from "./hal-mcp-client.mjs";
 import { createPolicyEngine } from "./policy-engine.mjs";
-import { deterministicIntentResponse } from "./deterministic-engine.mjs";
+import { deterministicIntentResponse, isCodeIntent, isFollowUpPrompt, isStatusQuestion } from "./deterministic-engine.mjs";
 import { buildDocSearchPromptSupplement, retrieveDocsForPrompt } from "./doc-search.mjs";
 import { baselineProductsToUi, getOllamaRuntime, lokiStateFromBaseline } from "./runtime-status.mjs";
 import { streamSSESections, streamSSEText, proxyOllamaStreamToSSE } from "./sse.mjs";
@@ -106,6 +106,24 @@ async function probeAny(candidates, { timeoutMs = 3000 } = {}) {
     }
   }
   return false;
+}
+
+// TCP-level probe — works for non-HTTP services (LDAP, MySQL, etc.)
+// Returns true if the port is open (connection accepted then closed).
+async function fetchHalStatusProducts() {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const response = await fetch("http://hal-status:9001/api/status", { signal: controller.signal });
+    clearTimeout(timer);
+    if (!response.ok) return null;
+    const snap = await response.json();
+    // hal-status returns the same shape as the MCP baseline runtime: { products: [...] }
+    const mapped = baselineProductsToUi(snap);
+    return mapped.length > 0 ? mapped : null;
+  } catch {
+    return null;
+  }
 }
 
 // For each product, define:
@@ -205,6 +223,25 @@ async function fallbackProductsFromEndpoints() {
     features: obsFeatures
   };
 
+  // Probe Vault feature dependencies in parallel
+  const vaultRow = results.find((r) => r.name === "Vault");
+  if (vaultRow) {
+    const [oidcUp, jwtUp, k8sUp] = await Promise.all([
+      probeAny(["http://hal-keycloak:8080/health/ready", "http://127.0.0.1:8080/health/ready"]),
+      probeAny(["http://hal-gitlab:80", "http://127.0.0.1:8929"]),
+      probeAny(["https://kind-control-plane:6443/readyz", "https://127.0.0.1:6443/readyz"])
+    ]);
+    // audit/ldap/database require exec or TCP — leave as disabled in the fallback path
+    vaultRow.features = [
+      `audit:disabled`,
+      `database:disabled`,
+      `jwt:${jwtUp ? "enabled" : "disabled"}`,
+      `k8s:${k8sUp ? "enabled" : "disabled"}`,
+      `ldap:disabled`,
+      `oidc:${oidcUp ? "enabled" : "disabled"}`
+    ];
+  }
+
   // Nomad: try the web UI / HTTP API on both hal-net name and localhost
   const nomadUp = await probeAny([
     "http://hal-nomad:4646/v1/agent/health",
@@ -244,6 +281,25 @@ function resolveBehaviorContextFromConversation(inputMessages, prompt) {
   const mergedPrompt = recentUserPrompts.join("\n");
   const merged = resolveBehaviorContext(mergedPrompt);
   return merged?.primary ? merged : direct;
+}
+
+// Route C — extract the last behavior context that matched in this conversation.
+// Used to ground follow-up prompts when no direct behavior match exists.
+function lastMatchedBehaviorContext(inputMessages) {
+  const userPrompts = (inputMessages || [])
+    .filter((m) => m?.role === "user" && typeof m?.content === "string")
+    .map((m) => m.content.trim())
+    .filter(Boolean)
+    .slice(-5) // look back up to 5 turns
+    .reverse(); // most recent first
+
+  for (const pastPrompt of userPrompts) {
+    const ctx = resolveBehaviorContext(pastPrompt);
+    if (ctx?.primary) {
+      return ctx;
+    }
+  }
+  return null;
 }
 
 async function callMcpWithFallback(primaryTool, fallbackTools, args = {}) {
@@ -355,7 +411,8 @@ app.get("/api/status", async (_req, res) => {
     ]);
     const runtime = baseline?.structuredContent?.data?.runtime || null;
     const baselineProducts = baselineProductsToUi(runtime);
-    const products = baselineProducts.length > 0 ? baselineProducts : await fallbackProductsFromEndpoints();
+    const halStatusProducts = await fetchHalStatusProducts();
+    const products = baselineProducts.length > 0 ? baselineProducts : (halStatusProducts || await fallbackProductsFromEndpoints());
     const lokiReady = lokiStateFromBaseline(runtime);
     const capabilityCount = Array.isArray(runtimeCatalog?.actions) ? runtimeCatalog.actions.length : 0;
     const toolCount = Array.isArray(runtimeCatalog?.toolNames) ? runtimeCatalog.toolNames.length : 0;
@@ -386,6 +443,7 @@ app.get("/api/status", async (_req, res) => {
         halMcp: {
           ok: mcpTransportOk,
           runtimeOk: mcpRuntimeOk,
+          url: String(process.env.HAL_MCP_HTTP_URL || "").trim() || null,
           detail: mcpTransportOk && mcpRuntimeOk
             ? `HAL MCP runtime tools ready (${toolCount} tools, ${capabilityCount} actions, ${skillsCount} skills)`
             : mcpTransportOk && !mcpRuntimeOk
@@ -445,6 +503,12 @@ app.post("/api/chat", async (req, res) => {
 
     const prompt = lastUserPrompt(inputMessages);
     const behaviorContext = resolveBehaviorContextFromConversation(inputMessages, prompt);
+
+    // Route C: if no behavior matched and this looks like a follow-up, retrieve the last matched context
+    // and inject its body as grounding so the model can answer contextually.
+    const priorBehaviorContext = (!behaviorContext?.primary && isFollowUpPrompt(prompt))
+      ? lastMatchedBehaviorContext(inputMessages)
+      : null;
     const [runtimePolicy, runtimeCatalog, docSearch] = await Promise.all([
       getRuntimePolicy(),
       halMcpClient.getRuntimeCatalog().catch(() => null),
@@ -453,18 +517,21 @@ app.post("/api/chat", async (req, res) => {
     const behaviorCoverage = evaluateBehaviorMcpCoverage(behaviorContext, runtimeCatalog, runtimePolicy);
     const [behaviorGrounding, probeProducts] = await Promise.all([
       gatherBehaviorGrounding(behaviorContext, halMcpClient, runtimeCatalog, prompt).catch(() => null),
-      fallbackProductsFromEndpoints().catch(() => [])
+      fetchHalStatusProducts().then((r) => r || fallbackProductsFromEndpoints()).catch(() => [])
     ]);
     const systemPrompt = buildSystemPrompt(
       runtimePolicy,
       [
         buildBehaviorPromptSupplement(behaviorContext),
+        // Route C: inject prior behavior body as follow-up grounding when current prompt has no match
+        priorBehaviorContext ? `Prior conversation context (user is following up on: ${priorBehaviorContext.primary?.title || priorBehaviorContext.primary?.id}):\n\n${buildBehaviorPromptSupplement(priorBehaviorContext)}` : null,
         buildMcpCoveragePromptSupplement(behaviorCoverage),
         buildGroundingPromptSupplement(behaviorGrounding),
         buildDocSearchPromptSupplement(docSearch)
       ]
         .filter(Boolean)
-        .join("\n\n")
+        .join("\n\n"),
+      { codeIntent: isCodeIntent(prompt) }
     );
 
     const messages = [
@@ -476,7 +543,123 @@ app.post("/api/chat", async (req, res) => {
 
     const deterministicReply = await deterministicIntentResponse(prompt, behaviorContext, behaviorGrounding, behaviorCoverage, docSearch, probeProducts);
     if (deterministicReply) {
-      await streamSSESections(res, deterministicReply, { delayMs: 80 });
+      // Skip Qwen wrapping for status/health checks — they need to be instant.
+      // Only operational answers (configure/deploy/enable) benefit from prose context.
+      if (isStatusQuestion(prompt)) {
+        await streamSSESections(res, deterministicReply, { delayMs: 80 });
+        return;
+      }
+      // The model receives the MCP-verified commands as inviolable ground truth and must not modify them.
+      const hybridSystemPrompt = [
+        "You are HAL Plus, an educational HashiCorp Academy Labs assistant.",
+        "The following is MCP-verified ground truth for this question. Your job is to write a natural, educational response that wraps this content.",
+        "Rules:",
+        "- Write 1-2 sentences of human intro BEFORE the grounded block explaining what this does and why.",
+        "- Output the grounded block EXACTLY as provided, character for character — do not modify, reorder, or omit any commands, code blocks, or sections.",
+        "- After the grounded block, add 1-2 sentences of practical insight only if it adds genuine value (e.g. a common pitfall, a next step, or an option the user may not know about).",
+        "- Do not add new HAL commands or documentation links that are not already in the grounded block.",
+        "- Do not add headers or change the structure of the grounded block.",
+        "- Tone: direct, educational, warm — like a senior colleague explaining something to a peer.",
+        "",
+        "MCP-grounded block to wrap:",
+        deterministicReply
+      ].join("\n");
+
+      const hybridMessages = [
+        { role: "system", content: hybridSystemPrompt },
+        { role: "user", content: prompt }
+      ];
+
+      const hybridResponse = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          keep_alive: OLLAMA_KEEP_ALIVE,
+          stream: true,
+          think: false,
+          messages: hybridMessages
+        })
+      });
+
+      if (!hybridResponse.ok || !hybridResponse.body) {
+        await streamSSESections(res, deterministicReply, { delayMs: 80 });
+        return;
+      }
+
+      // Read from Qwen until we get the first real content chunk.
+      // We must NOT commit res (write headers/body) before we know Qwen is actually streaming —
+      // if Qwen fails before producing a chunk we fall back to streamSSESections cleanly.
+      const hybridReader = hybridResponse.body.getReader();
+      const hybridDecoder = new TextDecoder();
+      let hybridBuffer = "";
+      let firstChunk = null;
+
+      try {
+        outer: while (true) {
+          const { done, value } = await hybridReader.read();
+          if (done) break;
+          hybridBuffer += hybridDecoder.decode(value, { stream: true });
+          const lines = hybridBuffer.split("\n");
+          hybridBuffer = lines.pop() || "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let parsed;
+            try { parsed = JSON.parse(trimmed); } catch { continue; }
+            const content = parsed?.message?.content || "";
+            if (content) { firstChunk = content; break outer; }
+            if (parsed?.done) break outer;
+          }
+        }
+      } catch {
+        // Qwen stream failed before producing a chunk — fall back to deterministic
+        await streamSSESections(res, deterministicReply, { delayMs: 80 });
+        return;
+      }
+
+      if (!firstChunk) {
+        // Qwen produced no content — fall back to deterministic
+        await streamSSESections(res, deterministicReply, { delayMs: 80 });
+        return;
+      }
+
+      // Qwen is alive — commit the response and stream the rest
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.write(`data: ${JSON.stringify({ type: "meta", source: "hybrid", topic: behaviorContext?.primary?.id || priorBehaviorContext?.primary?.id || null })}
+
+`);
+      res.write(`data: ${JSON.stringify({ type: "chunk", content: firstChunk })}\n\n`);
+
+      // Continue streaming remaining chunks
+      try {
+        while (true) {
+          const { done, value } = await hybridReader.read();
+          if (done) break;
+          hybridBuffer += hybridDecoder.decode(value, { stream: true });
+          const lines = hybridBuffer.split("\n");
+          hybridBuffer = lines.pop() || "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let parsed;
+            try { parsed = JSON.parse(trimmed); } catch { continue; }
+            const content = parsed?.message?.content || "";
+            if (content) res.write(`data: ${JSON.stringify({ type: "chunk", content })}\n\n`);
+            if (parsed?.done) {
+              res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+              res.end();
+              return;
+            }
+          }
+        }
+      } catch {
+        // Stream interrupted after content started — best effort, just close
+      }
+      res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+      res.end();
       return;
     }
 

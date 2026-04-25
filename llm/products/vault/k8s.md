@@ -67,10 +67,22 @@
       "description": "Configure the Kubernetes auth method and service account token validation."
     },
     {
-      "title": "Vault Docs",
-      "href": "https://developer.hashicorp.com/vault",
+      "title": "Vault K8s Auth — Configuring Kubernetes",
+      "href": "https://developer.hashicorp.com/vault/docs/auth/kubernetes#configuring-kubernetes",
       "kind": "official",
-      "description": "Official Vault documentation."
+      "description": "Step-by-step guide to configure the Kubernetes auth method backend."
+    },
+    {
+      "title": "Vault K8s Auth — Reviewer JWT",
+      "href": "https://developer.hashicorp.com/vault/docs/auth/kubernetes#use-the-vault-client-s-jwt-as-the-reviewer-jwt",
+      "kind": "official",
+      "description": "Using the Vault client JWT as the reviewer JWT — critical for ambient credential environments."
+    },
+    {
+      "title": "Vault K8s Auth — Kubernetes Auth Method Overview",
+      "href": "https://developer.hashicorp.com/vault/docs/auth/kubernetes#kubernetes-auth-method",
+      "kind": "official",
+      "description": "Overview of how the Kubernetes auth method works with service account tokens."
     }
   ],
   "uiLinks": [
@@ -102,13 +114,58 @@
 }
 -->
 
-# Vault K8s in HAL
+When you run `hal vault k8s --enable`, HAL wires a full KinD cluster to the local Vault instance and deploys Vault Secrets Operator via Helm.
 
-Use this pack for Vault Kubernetes auth, KinD, Vault Secrets Operator, and CSI versus native-sync questions.
+### What gets created
 
-## Operator Rules
+| Component | Value |
+|---|---|
+| Auth mount | `auth/kubernetes/` |
+| Vault role | `app1-role` (bound to service account `app1-sa`) |
+| Policy | `app1-read` |
+| KV mount | `kv-k8s/` |
+| Demo app endpoint | `http://web.localhost:8088` |
 
-- Prefer `hal vault k8s --enable` as the shortest HAL-first answer.
-- If the user asks for CSI, call out that the lab requires Enterprise for that path.
-- Verification should include both Vault-side auth checks and cluster-side pod or VSO checks.
-- The main operator-facing endpoint for the demo app is `http://web.localhost:8088`.
+### Inspect the auth config
+
+```shell
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='root'
+
+# Confirm the kubernetes auth method is mounted and configured
+vault read auth/kubernetes/config
+
+# Inspect the role that maps app1-sa to the app1-read policy
+vault read auth/kubernetes/role/app1-role
+
+# Read the demo secret that VSO syncs into the cluster
+vault kv get kv-k8s/app1
+```
+
+### Cluster-side verification
+
+```shell
+# VSO and app1 namespaces must both be Running
+kubectl get pods -n vso
+kubectl get pods -n app1
+helm list -n vso
+
+# Native mode: check the VaultStaticSecret resource
+kubectl get vaultstaticsecret vso-mysecret -n app1
+
+# CSI mode (Enterprise only): check the CSI secret
+kubectl get csisecrets hal-csi-secrets -n app1
+```
+
+### Tune the role after deploy (optional)
+
+```shell
+# Extend TTL or add a second namespace binding
+vault write auth/kubernetes/role/app1-role \
+  bound_service_account_names=app1-sa \
+  bound_service_account_namespaces=app1 \
+  policies=app1-read \
+  ttl=24h
+```
+
+CSI mode requires Vault Enterprise — HAL automatically falls back to native sync on OSS Vault.

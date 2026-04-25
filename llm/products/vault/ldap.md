@@ -98,13 +98,54 @@
 }
 -->
 
-# Vault LDAP in HAL
+When you run `hal vault ldap enable`, HAL brings up an OpenLDAP container and phpLDAPadmin, then configures both the LDAP auth method and the LDAP secrets engine in Vault.
 
-Use this pack for LDAP-backed human login and the LDAP secrets engine demo.
+### What gets created
 
-## Operator Rules
+| Component | Value |
+|---|---|
+| Auth mount | `auth/ldap/` |
+| Secrets mount | `ldap/` |
+| Policies | `ldap-admin`, `ldap-reader` |
+| Dynamic role | `ldap/role/dynamic-reader` |
+| Static role | `ldap/static-role/static-app` |
+| Library | `ldap/library/dev-pool` |
+| Directory UI | `https://phpldapadmin.localhost:8082` |
 
-- Prefer `hal vault ldap --enable` for setup and `hal vault ldap --force` for repair or reset.
-- Be explicit about whether the user means LDAP auth, LDAP secrets, or both.
-- Reference phpLDAPadmin when directory inspection is part of the workflow.
-- Keep the answer HAL-first and only drop to `vault read` or `vault login -method=ldap` for verification and day-2 checks.
+### Inspect auth and secrets config
+
+```shell
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='root'
+
+# Auth method configuration (LDAP server URL, bind DN, user search)
+vault read auth/ldap/config
+
+# Group-to-policy mappings
+vault read auth/ldap/groups/admin
+vault read auth/ldap/groups/reader
+
+# LDAP secrets engine config (service account manager)
+vault read ldap/config
+vault read ldap/role/dynamic-reader
+vault read ldap/static-role/static-app
+vault read ldap/library/dev-pool
+```
+
+### Test login and credential generation
+
+```shell
+# Login as a seeded LDAP user
+vault login -method=ldap username=bob password=password
+
+# Generate a short-lived dynamic LDAP user
+vault read ldap/creds/dynamic-reader
+
+# Read a rotated static service account password
+vault read ldap/static-cred/static-app
+
+# Check out a credential from the dev-pool library
+vault write -f ldap/library/dev-pool/check-out
+```
+
+The root bind account password is rotated by Vault once the LDAP secrets engine is configured — it will no longer be the original static value.

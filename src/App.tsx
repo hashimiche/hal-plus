@@ -20,6 +20,8 @@ type Message = {
   role: Role;
   text: string;
   ts: string;
+  source?: "hybrid" | "model";
+  behaviorTopic?: string;
 };
 
 type ThemeVersion = {
@@ -42,7 +44,7 @@ type LiveStatus = {
   runtime: {
     loki: { ok: boolean; detail: string };
     llm: { ok: boolean; detail: string; model?: string; runtimeModel?: string; contextWindow?: number; keepAlive?: string };
-    halMcp: { ok: boolean; detail: string; missingTools?: string[] };
+    halMcp: { ok: boolean; detail: string; missingTools?: string[]; url?: string };
   };
   products: HalProduct[];
 };
@@ -61,18 +63,6 @@ type CatalogLink = {
   href: string;
   kind?: string;
   description?: string;
-};
-
-type DocsEvidenceItem = CatalogLink & {
-  snippet?: string;
-  sourceTitle?: string;
-  sectionTitle?: string;
-  type?: string;
-};
-
-type DocsRetrievalMeta = {
-  mode?: string;
-  debug?: unknown;
 };
 
 type CatalogSubcommand = {
@@ -110,6 +100,8 @@ type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & {
 
 type MarkdownPreProps = ComponentPropsWithoutRef<"pre"> & {
   children?: ReactNode;
+  mcpGrounded?: boolean;
+  behaviorTopic?: string;
 };
 
 const themeVersions: ThemeVersion[] = [
@@ -160,66 +152,12 @@ function uniqueStrings(items: string[]): string[] {
   return [...new Set(items.filter(Boolean))];
 }
 
-function uniqueLinks(items: CatalogLink[]): CatalogLink[] {
-  const seen = new Set<string>();
-  const result: CatalogLink[] = [];
-
-  for (const item of items) {
-    if (!item?.href || seen.has(item.href)) {
-      continue;
-    }
-    seen.add(item.href);
-    result.push(item);
-  }
-
-  return result;
-}
-
-function scoreDocLink(prompt: string, product: CatalogProduct | null, link: CatalogLink): number {
-  const haystack = [link.title, link.description, link.kind].filter(Boolean).join(" ").toLowerCase();
-  const promptLower = String(prompt || "").toLowerCase();
-  const productTerms = product
-    ? [product.label, product.title, ...(product.matchTerms || []), ...product.subcommands.flatMap((subcommand) => subcommand.matchTerms || [])]
-    : [];
-
-  let score = 0;
-  if (link.kind === "official") {
-    score += 10;
-  }
-  score += scoreTerms(haystack, productTerms.filter(Boolean));
-  score += scoreTerms(haystack, promptLower.split(/\W+/).filter(Boolean));
-  return score;
-}
-
 function seededScore(value: string, seed: number): number {
   let hash = seed || 1;
   for (let i = 0; i < value.length; i += 1) {
     hash = (hash * 33 + value.charCodeAt(i)) % 2147483647;
   }
   return hash;
-}
-
-function shouldShowDocsForPrompt(prompt: string): boolean {
-  const lower = String(prompt || "").toLowerCase();
-  if (!lower.trim()) {
-    return false;
-  }
-
-  const docIntent = ["how", "deploy", "setup", "configure", "tutorial", "guide", "workflow", "learn", "troubleshoot", "fix"];
-  const statusOnlyIntent = ["status", "running", "up", "health", "local instance", "is my", "is tfe", "check"];
-
-  const hasDocIntent = docIntent.some((term) => lower.includes(term));
-  const hasStatusIntent = statusOnlyIntent.some((term) => lower.includes(term));
-
-  if (hasDocIntent) {
-    return true;
-  }
-
-  if (hasStatusIntent) {
-    return false;
-  }
-
-  return false;
 }
 
 function loadingVerbForMessageId(messageId: string): string {
@@ -265,7 +203,7 @@ function extractText(node: ReactNode): string {
   return "";
 }
 
-function MarkdownPreBlock({ children, ...props }: MarkdownPreProps) {
+function MarkdownPreBlock({ children, mcpGrounded, behaviorTopic, ...props }: MarkdownPreProps) {
   const [copied, setCopied] = useState(false);
   const rawText = extractText(children).replace(/\n$/, "");
 
@@ -290,7 +228,18 @@ function MarkdownPreBlock({ children, ...props }: MarkdownPreProps) {
   };
 
   return (
-    <div className="code-block-wrap">
+    <div className={`code-block-wrap${mcpGrounded ? " mcp-grounded" : ""}`}>
+      {mcpGrounded && (
+        <span className="mcp-source-chips" aria-label="MCP grounded">
+          <span className="mcp-source-chip">
+            MCP
+            <span className="mcp-source-tooltip">HAL MCP verified — commands sourced from live runtime</span>
+          </span>
+          {behaviorTopic && (
+            <span className="mcp-topic-chip">{behaviorTopic.replace(/_/g, "-").replace(/-product$/, "") || behaviorTopic}</span>
+          )}
+        </span>
+      )}
       <button type="button" className="code-copy-btn" onClick={handleCopy} aria-label="Copy code block">
         <span className="copy-icon" aria-hidden />
         {copied ? "Copied" : "Copy"}
@@ -308,9 +257,6 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [catalog, setCatalog] = useState<BehaviorCatalog | null>(null);
-  const [docSuggestions, setDocSuggestions] = useState<CatalogLink[]>([]);
-  const [docEvidence, setDocEvidence] = useState<DocsEvidenceItem[]>([]);
-  const [docsRetrievalMode, setDocsRetrievalMode] = useState<string>("idle");
   const [suggestionSeed, setSuggestionSeed] = useState(() => Math.floor(Math.random() * 100000));
   const formRef = useRef<HTMLFormElement>(null);
   const chatPanelRef = useRef<HTMLElement>(null);
@@ -369,52 +315,6 @@ export default function App() {
     const interval = window.setInterval(fetchStatus, 12000);
     return () => window.clearInterval(interval);
   }, []);
-
-  useEffect(() => {
-    if (!shouldShowDocsForPrompt(latestUserPrompt)) {
-      setDocSuggestions([]);
-      setDocEvidence([]);
-      setDocsRetrievalMode("idle");
-      return;
-    }
-
-    const controller = new AbortController();
-
-    const fetchDocs = async () => {
-      try {
-        const response = await fetch("/api/docs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: latestUserPrompt }),
-          signal: controller.signal
-        });
-
-        if (!response.ok) {
-          return;
-        }
-
-        const data = (await response.json()) as {
-          docs?: CatalogLink[];
-          evidence?: DocsEvidenceItem[];
-          retrieval?: DocsRetrievalMeta;
-        };
-        setDocSuggestions(Array.isArray(data.docs) ? data.docs : []);
-        setDocEvidence(Array.isArray(data.evidence) ? data.evidence : []);
-        setDocsRetrievalMode(typeof data.retrieval?.mode === "string" ? data.retrieval.mode : "unknown");
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-
-        setDocEvidence([]);
-        setDocsRetrievalMode("error");
-      }
-    };
-
-    void fetchDocs();
-
-    return () => controller.abort();
-  }, [latestUserPrompt]);
 
   useEffect(() => {
     const panel = chatPanelRef.current;
@@ -545,49 +445,6 @@ export default function App() {
     return result;
   }, [activeCatalogProduct, activeSuggestions, catalog?.products, messages]);
 
-  const relevantDocs = useMemo(() => {
-    const products = catalog?.products || [];
-    if (products.length === 0) {
-      return [];
-    }
-
-    const target = activeCatalogProduct || products[0];
-    const docs = uniqueLinks(target.resources || []);
-    return docs
-      .map((doc) => ({ ...doc, score: scoreDocLink(latestUserPrompt, target, doc) }))
-      .sort((left, right) => right.score - left.score || String(left.title).localeCompare(String(right.title)))
-      .slice(0, 6);
-  }, [activeCatalogProduct, catalog?.products, latestUserPrompt]);
-
-  const visibleDocs = useMemo(() => {
-    if (!shouldShowDocsForPrompt(latestUserPrompt)) {
-      return [];
-    }
-
-    if (docsRetrievalMode === "no-match") {
-      return [];
-    }
-
-    if (docSuggestions.length > 0) {
-      return docSuggestions.slice(0, 4);
-    }
-
-    return relevantDocs.filter((doc) => doc.score > 0).slice(0, 4);
-  }, [docSuggestions, docsRetrievalMode, latestUserPrompt, relevantDocs]);
-
-  const visibleEvidence = useMemo(() => {
-    if (!shouldShowDocsForPrompt(latestUserPrompt)) {
-      return [];
-    }
-
-    if (docsRetrievalMode === "no-match") {
-      return [];
-    }
-
-    return docEvidence.slice(0, 4);
-  }, [docEvidence, docsRetrievalMode, latestUserPrompt]);
-
-  const showDocsSidebar = visibleEvidence.length > 0 || visibleDocs.length > 0;
 
   const healthChips: HealthChip[] = useMemo(
     () => {
@@ -650,19 +507,30 @@ export default function App() {
 
   const renderChipOverlay = (chip: HealthChip) => {
     if (chip.kind === "product" && chip.product) {
+      const features = chip.product.features;
       return (
         <div className="chip-overlay product-overlay" role="presentation">
           <div className="chip-overlay-head product-overlay-head">
             <strong>{chip.product.name}</strong>
             <span>{chip.product.state}</span>
           </div>
-          <p>{chip.product.version && chip.product.version !== "n/a" ? `Version ${chip.product.version}` : "Version unavailable"}</p>
-          <p>{chip.product.endpoint || "No endpoint discovered"}</p>
-          {chip.product.features.length > 0 ? (
-            <div className="chip-overlay-tags product-overlay-features">
-              {chip.product.features.slice(0, 4).map((feature) => (
-                <span key={feature}>{feature}</span>
-              ))}
+          {chip.product.version && chip.product.version !== "n/a" && chip.product.version !== "-" ? (
+            <p>{chip.product.version}</p>
+          ) : null}
+          {features.length > 0 ? (
+            <div className="chip-overlay-features">
+              {features.map((feature) => {
+                const colonIdx = feature.indexOf(":");
+                const key = colonIdx >= 0 ? feature.slice(0, colonIdx) : feature;
+                const value = colonIdx >= 0 ? feature.slice(colonIdx + 1) : "";
+                const enabled = value.toLowerCase() === "enabled";
+                return (
+                  <span key={feature} className={`feature-row ${enabled ? "feature-enabled" : "feature-disabled"}`}>
+                    <span className="feature-dot" aria-hidden>●</span>
+                    {key}
+                  </span>
+                );
+              })}
             </div>
           ) : null}
         </div>
@@ -695,13 +563,13 @@ export default function App() {
             <span>{chip.state === "ok" ? "ready" : "degraded"}</span>
           </div>
           <p>{chip.detail}</p>
-          <div className="chip-overlay-tags">
-            <span>Grounding source</span>
-            <span>Runtime truth</span>
-            {missingTools.map((toolName) => (
-              <span key={toolName}>{toolName} missing</span>
-            ))}
-          </div>
+          {missingTools.length > 0 ? (
+            <div className="chip-overlay-tags">
+              {missingTools.map((toolName) => (
+                <span key={toolName}>{toolName} missing</span>
+              ))}
+            </div>
+          ) : null}
         </div>
       );
     }
@@ -772,7 +640,15 @@ export default function App() {
           }
 
           const payloadRaw = payloadLine.replace(/^data:\s*/, "");
-          const payload = JSON.parse(payloadRaw) as { type: string; content?: string; message?: string };
+          const payload = JSON.parse(payloadRaw) as { type: string; content?: string; message?: string; source?: string; topic?: string };
+
+          if (payload.type === "meta" && payload.source) {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantId ? { ...message, source: payload.source as Message["source"], behaviorTopic: payload.topic ?? undefined } : message
+              )
+            );
+          }
 
           if (payload.type === "chunk" && payload.content) {
             setMessages((prev) =>
@@ -834,42 +710,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app-shell ${theme.className} ${showDocsSidebar ? "has-docs" : "no-docs"}`}>
-      {showDocsSidebar ? (
-      <aside className="left-column">
-        <section className="panel utility-panel docs-panel">
-          <header className="panel-header">
-            <span className="panel-kicker">Documentation</span>
-            <h2>{visibleEvidence.length > 0 ? "Relevant Sections" : "Relevant Sources"}</h2>
-            <p>{activeCatalogProduct?.label ? `For ${activeCatalogProduct.label}` : "Based on your current question."}</p>
-          </header>
-          <ul className="docs-list">
-            {visibleEvidence.length > 0
-              ? visibleEvidence.map((evidence, index) => (
-                  <li key={`${evidence.href}-${evidence.sectionTitle || evidence.title}`} className={`doc-card ${index === 0 ? "featured-doc" : ""}`}>
-                    <div className="doc-kind">{evidence.kind || "guide"}</div>
-                    <a href={evidence.href} target="_blank" rel="noreferrer">
-                      {evidence.sectionTitle || evidence.title}
-                    </a>
-                    {evidence.sourceTitle && evidence.sourceTitle !== evidence.sectionTitle ? (
-                      <p className="doc-source">From {evidence.sourceTitle}</p>
-                    ) : null}
-                    <p>{evidence.snippet || evidence.description}</p>
-                  </li>
-                ))
-              : visibleDocs.map((doc) => (
-                  <li key={doc.href} className={`doc-card ${doc === visibleDocs[0] ? "featured-doc" : ""}`}>
-                    <div className="doc-kind">{doc.kind || "guide"}</div>
-                    <a href={doc.href} target="_blank" rel="noreferrer">
-                      {doc.title}
-                    </a>
-                    <p>{doc.description}</p>
-                  </li>
-                ))}
-          </ul>
-        </section>
-      </aside>
-      ) : null}
+    <div className={`app-shell ${theme.className} no-docs`}>
 
       <main className="right-column">
         <header className="top-block panel compact">
@@ -947,7 +788,15 @@ export default function App() {
                   ) : (
                     <>
                       <div className="msg-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCodeBlock, pre: MarkdownPreBlock }}>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            code: MarkdownCodeBlock,
+                            pre: message.source === "hybrid"
+                              ? (preProps) => <MarkdownPreBlock {...preProps} mcpGrounded behaviorTopic={message.behaviorTopic} />
+                              : MarkdownPreBlock
+                          }}
+                        >
                           {message.text}
                         </ReactMarkdown>
                       </div>

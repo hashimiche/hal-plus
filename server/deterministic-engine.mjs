@@ -9,6 +9,12 @@ function isOperationalPrompt(prompt) {
     "configured",
     "setup",
     "deploy",
+    "create",
+    "start",
+    "build",
+    "bring up",
+    "spin up",
+    "set up",
     "steps",
     "how",
     "what",
@@ -44,11 +50,120 @@ function isOperationalPrompt(prompt) {
   return opsWords.some((w) => lower.includes(w));
 }
 
-function isStatusQuestion(prompt) {
+export function isStatusQuestion(prompt) {
   const lower = String(prompt || "").toLowerCase();
   const statusTerms = ["status", "running", "is ", "up", "healthy", "health", "reachable"];
   const productTerms = ["tfe", "terraform", "vault", "consul", "nomad", "boundary", "observability"];
   return statusTerms.some((term) => lower.includes(term)) && productTerms.some((term) => lower.includes(term));
+}
+
+// Route A — knowledge/factual intent: user is asking a conceptual or prerequisite question.
+// These must NOT produce a command dump. See llm/ANSWER_QUALITY.md Route A.
+function isKnowledgeQuestion(prompt) {
+  const lower = String(prompt || "").toLowerCase();
+  const knowledgePhrases = [
+    "does ",
+    "do i need",
+    "is it required",
+    "is it free",
+    "is it enterprise",
+    "is it ent",
+    "needs a license",
+    "need a license",
+    "require a license",
+    "what is ",
+    "what's the difference",
+    "why does",
+    "difference between",
+    "what does it need",
+    // URL / access questions
+    "what url",
+    "what urls",
+    "which url",
+    "which urls",
+    "what endpoint",
+    "what address",
+    "where is the",
+    "where can i",
+    "where do i go",
+    "what port",
+    "what ports",
+    "how do i access",
+    "how do i open",
+    "how do i reach",
+    // Aspirational / conceptual intent
+    "i want to understand",
+    "i want to know",
+    "i want to learn",
+    "tell me about",
+    "explain "
+  ];
+  // Operational signals override the knowledge classification.
+  const operationalOverride = [
+    "configure",
+    "how to",
+    "give me the code",
+    "show me",
+    "steps to",
+    "enable",
+    "deploy",
+    "install"
+  ];
+  const matchesKnowledge = knowledgePhrases.some((p) => lower.includes(p));
+  const matchesOperational = operationalOverride.some((p) => lower.includes(p));
+  return matchesKnowledge && !matchesOperational;
+}
+
+// Route C — follow-up / contextual prompt detection.
+// Short prompts with no clear topic are likely follow-ups to the previous exchange.
+// See llm/ANSWER_QUALITY.md Route C.
+export function isFollowUpPrompt(prompt) {
+  const lower = String(prompt || "").trim().toLowerCase();
+  if (lower.length > 80) {
+    return false;
+  }
+  // Phrases that must appear at the START of the prompt to count as follow-up starters.
+  const startFollowUps = [
+    "and ", "what about", "how about", "on a ", "same for", "what if",
+    "can i ", "could i ", "is it possible", "also ", "and if", "but if",
+    "another ", "different ", "or ", "instead of", "without ", "with a "
+  ];
+  // Phrases that count anywhere in a short prompt.
+  const anywhereFollowUps = [
+    "what about", "how about", "same for"
+  ];
+  return startFollowUps.some((p) => lower.startsWith(p)) ||
+    anywhereFollowUps.some((p) => lower.includes(p));
+}
+
+// Route B code-intent sub-flag: user wants to see internals / raw commands / config code.
+// When true, the model supplement cap is lifted and behavior body is surfaced.
+// See llm/ANSWER_QUALITY.md Route B code-intent expansion.
+export function isCodeIntent(prompt) {
+  const lower = String(prompt || "").toLowerCase();
+  const directPhrases = [
+    "give me the code",
+    "show me the code",
+    "show me the config",
+    "the code",
+    "what's the api",
+    "api call",
+    "curl command",
+    "raw command",
+    "how does it work",
+    "under the hood",
+    "what does hal do",
+    "internals",
+    "what happens",
+    "cli command"
+  ];
+  if (directPhrases.some((p) => lower.includes(p))) {
+    return true;
+  }
+  // "configure the X" or "X configuration" paired with code/example signal.
+  const configSignal = lower.includes("configure") || lower.includes("configuration");
+  const codeSignal = ["code", "snippet", "block", "example", "how"].some((p) => lower.includes(p));
+  return configSignal && codeSignal;
 }
 
 function statusRuntimeState(grounding) {
@@ -449,6 +564,90 @@ function scoreResourceForPrompt(prompt, resource) {
   return score;
 }
 
+// Detect URL-first intent: user is asking for endpoints, ports, surfaces.
+function isUrlIntent(prompt) {
+  const lower = String(prompt || "").toLowerCase();
+  return ["url", "endpoint", "port", "address", "where is", "where can i", "how do i access", "how do i open", "how do i reach", "lab surface"].some((p) => lower.includes(p));
+}
+
+// Build a Route A knowledge answer: prose + one command + one doc.
+// For URL-intent prompts, leads with lab surfaces instead of prose.
+// No Preflight/Run/Check/Verify blocks. See llm/ANSWER_QUALITY.md.
+function buildKnowledgeAnswer(prompt, behavior, product, grounding, docSearch) {
+  const summary = behavior.summary || product?.summary || "";
+  const lowerPrompt = String(prompt || "").toLowerCase();
+
+  // Collect UI links for URL-first answers.
+  const uiLinks = uniqueResourceList(
+    []
+      .concat(Array.isArray(product?.uiLinks) ? product.uiLinks : [])
+      .concat(Array.isArray(behavior.uiLinks) ? behavior.uiLinks : [])
+      .concat(uiLinksFromGrounding(grounding))
+  );
+
+  // For URL-intent prompts, lead with the surfaces and skip the prose dump.
+  if (isUrlIntent(prompt) && uiLinks.length > 0) {
+    const lines = ["Lab surfaces:", ""];
+    for (const link of uiLinks) {
+      lines.push(`- **${link.title}**: ${link.href}`);
+    }
+    const docFromBehavior = (behavior.resources || []).find((r) => r.kind === "official");
+    if (docFromBehavior) {
+      lines.push("", `Docs: ${docFromBehavior.href}`);
+    }
+    return lines.join("\n");
+  }
+
+  // Pick the most prompt-relevant note or bullet to append to the summary.
+  const allBullets = uniqueStrings([
+    ...(behavior.focusBullets || []),
+    ...(product?.focusBullets || []),
+    ...(behavior.notes || []),
+    ...(product?.notes || []),
+    ...notesFromGrounding(grounding)
+  ]);
+  const scoredBullets = allBullets
+    .map((bullet) => {
+      const lower = bullet.toLowerCase();
+      let score = 0;
+      for (const word of lowerPrompt.split(/\W+/).filter((w) => w.length > 3)) {
+        if (lower.includes(word)) score += 1;
+      }
+      if (lowerPrompt.includes("license") && (lower.includes("license") || lower.includes("_license"))) score += 5;
+      if ((lowerPrompt.includes("enterprise") || lowerPrompt.includes(" ent")) && lower.includes("enterprise")) score += 4;
+      if (lowerPrompt.includes("csi") && lower.includes("csi")) score += 4;
+      if (lowerPrompt.includes("cli") && lower.includes("cli")) score += 3;
+      return { bullet, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  const relevantBullet = scoredBullets[0]?.score > 0 ? scoredBullets[0].bullet : null;
+
+  // Build prose: summary sentence + most relevant note.
+  const proseParts = [summary];
+  if (relevantBullet && relevantBullet !== summary) {
+    proseParts.push(relevantBullet);
+  }
+  const prose = proseParts.join(" ");
+
+  // One key command: first actionCommand that looks like a license export or primary create.
+  const licenseExport = (behavior.actionCommands || []).find((c) => c.toLowerCase().includes("export"));
+  const keyCommand = licenseExport || (behavior.actionCommands || [])[0] || null;
+
+  // One doc: prefer docSearch result, then first official resource.
+  const docFromSearch = Array.isArray(docSearch?.docs) && docSearch.docs[0]?.href ? docSearch.docs[0] : null;
+  const docFromBehavior = (behavior.resources || []).find((r) => r.kind === "official");
+  const doc = docFromSearch || docFromBehavior || null;
+
+  const lines = [prose, ""];
+  if (keyCommand) {
+    lines.push("```bash", keyCommand, "```", "");
+  }
+  if (doc) {
+    lines.push(`Docs: ${doc.href}`);
+  }
+  return lines.join("\n");
+}
+
 export async function deterministicIntentResponse(prompt, preloadedContext, grounding, coverage = null, docSearch = null, probeProducts = []) {
   if (!prompt || !isOperationalPrompt(prompt)) {
     return null;
@@ -460,6 +659,11 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
 
   if (!behavior) {
     return null;
+  }
+
+  // Route A — knowledge/factual questions get prose, not a command dump.
+  if (isKnowledgeQuestion(prompt)) {
+    return buildKnowledgeAnswer(prompt, behavior, product, grounding, docSearch);
   }
 
   let baselineState = "Unknown";
@@ -534,34 +738,32 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
     .map((entry) => entry.resource);
 
   const officialDocs = (() => {
-    const policyDocs = Array.isArray(docSearch?.docs)
+    // Behavior resources are authoritative for the matched product/subcommand.
+    // Only fall back to docSearch when the behavior has no official resources at all.
+    if (officialCandidates.length > 0) {
+      if (!monitoringIntent) {
+        return officialCandidates.slice(0, 2);
+      }
+      const monitoringDocs = officialCandidates.filter((resource) => isMonitoringResource(resource));
+      const docs = monitoringDocs.length > 0 ? [monitoringDocs[0]] : [];
+      for (const resource of officialCandidates) {
+        if (docs.some((doc) => doc.href === resource.href)) {
+          continue;
+        }
+        docs.push(resource);
+        if (docs.length >= 2) {
+          break;
+        }
+      }
+      return docs.slice(0, 2);
+    }
+    // Fallback: docSearch when behavior has no official resources.
+    return Array.isArray(docSearch?.docs)
       ? docSearch.docs
           .filter((doc) => typeof doc?.href === "string" && doc.href.trim())
           .map((doc) => ({ title: doc.title || "Documentation", href: doc.href, kind: doc.kind || "guide" }))
+          .slice(0, 2)
       : [];
-    if (policyDocs.length > 0) {
-      return policyDocs.slice(0, 2);
-    }
-
-    if (!monitoringIntent) {
-      return officialCandidates.slice(0, 1);
-    }
-
-    const monitoringDocs = officialCandidates.filter((resource) => isMonitoringResource(resource));
-    const docs = [];
-    if (monitoringDocs.length > 0) {
-      docs.push(monitoringDocs[0]);
-    }
-    for (const resource of officialCandidates) {
-      if (docs.some((doc) => doc.href === resource.href)) {
-        continue;
-      }
-      docs.push(resource);
-      if (docs.length >= 2) {
-        break;
-      }
-    }
-    return docs.slice(0, 2);
   })();
 
   const uiLinks = uniqueResourceList(
@@ -592,8 +794,8 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
   }
 
   // For enable/deploy/configure intents, 'Status: status collected' is unhelpful.
-  // Instead show a Preflight check when the baseline is generic, otherwise show real baseline.
-  const isGenericBaseline = !groundedBaseline || isGenericStatusMessage(groundedBaseline);
+  // Engine-unavailable signals are also unhelpful as a status prefix — use Preflight instead.
+  const isGenericBaseline = !groundedBaseline || isGenericStatusMessage(groundedBaseline) || hasEngineUnavailableSignal(grounding);
   const preflightCommand = statusCommands.length > 0 ? statusCommands[0] : null;
   const firstLines = isGenericBaseline && preflightCommand
     ? ["Preflight:", "```bash", preflightCommand, "```"]
@@ -639,6 +841,14 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
 
   if (usageLine && usageLine.includes("Usage:") && usageLine !== "Usage: unavailable (HAL MCP help topic unavailable)") {
     lines.push("", usageLine);
+  }
+
+  // Route B code-intent expansion: surface behavior body as an educational supplement.
+  // Only when the user explicitly asks for code/internals AND the behavior has authored body content.
+  // The model supplement cap is lifted for this path via policy-engine.mjs buildSystemPrompt.
+  const behaviorBody = typeof behavior.body === "string" ? behavior.body.trim() : "";
+  if (isCodeIntent(prompt) && behaviorBody.length > 0) {
+    lines.push("", "## Under the hood", "", behaviorBody);
   }
 
   return lines.join("\n");

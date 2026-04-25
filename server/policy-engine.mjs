@@ -87,10 +87,15 @@ export function createPolicyEngine(mcpClient, ttlMs) {
     }
   }
 
-  function buildSystemPrompt(policy, behaviorPromptSupplement = "") {
+  function buildSystemPrompt(policy, behaviorPromptSupplement = "", options = {}) {
+    const codeIntentMode = options.codeIntent === true;
     const requiredTools = Array.isArray(policy?.tool_policy?.required_prefetch_tools)
       ? policy.tool_policy.required_prefetch_tools.join(", ")
       : DEFAULT_POLICY.tool_policy.required_prefetch_tools.join(", ");
+
+    const modelSupplementGuidance = codeIntentMode
+      ? "The user is asking for code, configuration, or internals. You may emit full code blocks. Use only the behavior body content and official docs provided above as grounding — do not fabricate commands, flags, or API paths."
+      : "Keep MCP-grounded operational guidance first, then optionally add a brief model insight expansion (2-3 lines max) only if it adds practical context.";
 
     const sections = [
       "You are HAL Plus, an educational HashiCorp Academy Labs assistant.",
@@ -107,7 +112,8 @@ export function createPolicyEngine(mcpClient, ttlMs) {
       `Mandatory MCP prefetch tools before operational claims: ${requiredTools}.`,
       "IMPORTANT: Do not fabricate product state, versions, endpoints, or documentation URLs. Only include URLs you are certain of.",
       "If runtime evidence is missing, say unknown and ask for or run checks first.",
-      "Use markdown with runnable bash code blocks when relevant."
+      "Use markdown with runnable bash code blocks when relevant.",
+      modelSupplementGuidance
     ];
 
     if (behaviorPromptSupplement) {

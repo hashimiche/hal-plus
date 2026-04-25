@@ -24,7 +24,14 @@
       "helper container",
       "api workflow",
       "terraform login",
-      "remote execution from api-workflow"
+      "remote execution from api-workflow",
+      "cli-driven",
+      "cli driven",
+      "cli workflow",
+      "cli-based workflow",
+      "api-driven workflow",
+      "terraform workflow",
+      "tfe workflow"
     ],
     "all": []
   },

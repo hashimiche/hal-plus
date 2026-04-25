@@ -98,14 +98,53 @@
 }
 -->
 
-# Vault Database in HAL
+When you run `hal vault database enable --backend mariadb`, HAL spins up a MariaDB container and configures Vault's database secrets engine to issue dynamic credentials.
 
-Use this pack for the database secrets engine, dynamic credentials, and root-rotation questions.
+### What gets created
 
-## Operator Rules
+| Component | Value |
+|---|---|
+| Secrets engine mount | `database/` |
+| Connection name | `database/config/hal-vault-mariadb` |
+| Dynamic role | `database/roles/dba-role` |
+| Root user | `vaultadmin` (password rotated to Vault ownership on setup) |
 
-- Prefer `hal vault database -e --backend mariadb` as the shortest default setup command.
-- Mention `dba-role` and `database/config/hal-vault-mariadb` when users ask for exact object names.
-- If users ask for Postgres backend, state that it is planned but not implemented yet.
-- Keep the answer HAL-first, then cite the direct database tutorial section for configuration detail.
-- If the user asks about reusable JIT credentials for other products, mention the Boundary compatibility angle briefly.
+### Inspect the engine config
+
+```shell
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='root'
+
+# Confirm the connection is configured and Vault owns the root password
+vault read database/config/hal-vault-mariadb
+
+# Inspect the dynamic role (TTL, allowed statements)
+vault read database/roles/dba-role
+```
+
+### Generate and inspect dynamic credentials
+
+```shell
+# Generate a short-lived DB user — Vault creates it on-demand
+vault read database/creds/dba-role
+# Response includes username, password, lease_duration, lease_id
+```
+
+### Revoke a specific lease
+
+```shell
+# Revoke credentials immediately before the lease expires
+vault lease revoke <lease_id>
+```
+
+### Tune the role TTL after deploy (optional)
+
+```shell
+vault write database/roles/dba-role \
+  db_name=hal-vault-mariadb \
+  creation_statements="CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}'; GRANT SELECT ON *.* TO '{{name}}'@'%';" \
+  default_ttl=1h \
+  max_ttl=24h
+```
+
+Postgres backend is planned but not implemented yet — MariaDB is the only supported backend in this lab.
