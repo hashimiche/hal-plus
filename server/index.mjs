@@ -628,7 +628,7 @@ app.post("/api/chat", async (req, res) => {
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
-      res.write(`data: ${JSON.stringify({ type: "meta", source: "hybrid", topic: behaviorContext?.primary?.id || priorBehaviorContext?.primary?.id || null })}
+      res.write(`data: ${JSON.stringify({ type: "meta", source: "hybrid", mcpServer: "hal", topic: behaviorContext?.primary?.id || priorBehaviorContext?.primary?.id || null })}
 
 `);
       res.write(`data: ${JSON.stringify({ type: "chunk", content: firstChunk })}\n\n`);

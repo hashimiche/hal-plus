@@ -21,6 +21,7 @@ type Message = {
   text: string;
   ts: string;
   source?: "hybrid" | "model";
+  mcpServer?: string;
   behaviorTopic?: string;
 };
 
@@ -101,6 +102,7 @@ type MarkdownCodeProps = ComponentPropsWithoutRef<"code"> & {
 type MarkdownPreProps = ComponentPropsWithoutRef<"pre"> & {
   children?: ReactNode;
   mcpGrounded?: boolean;
+  mcpServer?: string;
   behaviorTopic?: string;
 };
 
@@ -203,7 +205,7 @@ function extractText(node: ReactNode): string {
   return "";
 }
 
-function MarkdownPreBlock({ children, mcpGrounded, behaviorTopic, ...props }: MarkdownPreProps) {
+function MarkdownPreBlock({ children, mcpGrounded, mcpServer, behaviorTopic, ...props }: MarkdownPreProps) {
   const [copied, setCopied] = useState(false);
   const rawText = extractText(children).replace(/\n$/, "");
 
@@ -233,10 +235,10 @@ function MarkdownPreBlock({ children, mcpGrounded, behaviorTopic, ...props }: Ma
         <span className="mcp-source-chips" aria-label="MCP grounded">
           <span className="mcp-source-chip">
             MCP
-            <span className="mcp-source-tooltip">HAL MCP verified — commands sourced from live runtime</span>
+            <span className="mcp-source-tooltip">MCP-grounded — commands sourced from live runtime</span>
           </span>
-          {behaviorTopic && (
-            <span className="mcp-topic-chip">{behaviorTopic.replace(/_/g, "-").replace(/-product$/, "") || behaviorTopic}</span>
+          {mcpServer && (
+            <span className="mcp-server-chip">{mcpServer}</span>
           )}
         </span>
       )}
@@ -640,12 +642,12 @@ export default function App() {
           }
 
           const payloadRaw = payloadLine.replace(/^data:\s*/, "");
-          const payload = JSON.parse(payloadRaw) as { type: string; content?: string; message?: string; source?: string; topic?: string };
+          const payload = JSON.parse(payloadRaw) as { type: string; content?: string; message?: string; source?: string; mcpServer?: string; topic?: string };
 
           if (payload.type === "meta" && payload.source) {
             setMessages((prev) =>
               prev.map((message) =>
-                message.id === assistantId ? { ...message, source: payload.source as Message["source"], behaviorTopic: payload.topic ?? undefined } : message
+                message.id === assistantId ? { ...message, source: payload.source as Message["source"], mcpServer: payload.mcpServer ?? undefined, behaviorTopic: payload.topic ?? undefined } : message
               )
             );
           }
@@ -793,7 +795,7 @@ export default function App() {
                           components={{
                             code: MarkdownCodeBlock,
                             pre: message.source === "hybrid"
-                              ? (preProps) => <MarkdownPreBlock {...preProps} mcpGrounded behaviorTopic={message.behaviorTopic} />
+                              ? (preProps) => <MarkdownPreBlock {...preProps} mcpGrounded mcpServer={message.mcpServer} behaviorTopic={message.behaviorTopic} />
                               : MarkdownPreBlock
                           }}
                         >
