@@ -617,6 +617,22 @@ body {
   position: relative;
 }
 
+/* MCP server chip — identifies which MCP server grounded the answer (e.g. "hal", "vault audit") */
+.mcp-server-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: color-mix(in srgb, var(--accent-2, #7c3aed) 65%, var(--text) 35%);
+  background: color-mix(in srgb, var(--accent-2, #7c3aed) 14%, var(--panel) 86%);
+  border: 1px solid color-mix(in srgb, var(--accent-2, #7c3aed) 22%, transparent 78%);
+  cursor: default;
+}
+
 /* Topic chip — matches MCP chip but uses a neutral tint */
 .mcp-topic-chip {
   display: inline-flex;
