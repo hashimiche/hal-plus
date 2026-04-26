@@ -114,11 +114,11 @@ async function fetchHalStatusProducts() {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
-    const response = await fetch("http://hal-status:9001/api/status", { signal: controller.signal });
+    const response = await fetch("http://hal-health:9001/api/status", { signal: controller.signal });
     clearTimeout(timer);
     if (!response.ok) return null;
     const snap = await response.json();
-    // hal-status returns the same shape as the MCP baseline runtime: { products: [...] }
+    // hal-health returns the same shape as the MCP baseline runtime: { products: [...] }
     const mapped = baselineProductsToUi(snap);
     return mapped.length > 0 ? mapped : null;
   } catch {
