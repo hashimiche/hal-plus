@@ -48,8 +48,8 @@
     }
   ],
   "actionCommands": [
-    "hal vault oidc --enable",
-    "hal vault oidc --force"
+    "hal vault oidc enable",
+    "hal vault oidc update"
   ],
   "verifyCommands": [
     "hal vault oidc",

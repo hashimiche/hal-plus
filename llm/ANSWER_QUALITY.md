@@ -49,7 +49,7 @@ Detection patterns (`isKnowledgeQuestion`):
 
 > Q: Does the HAL TFE lab need a license?
 >
-> A: Yes — Terraform Enterprise is an enterprise product and requires a valid license string before it can start. Set it with `export TFE_LICENSE='<your_license_string>'` before running `hal terraform create`. You can also deploy a second TFE instance with `hal terraform create --twin` if you want to test multi-instance federation.
+> A: Yes — Terraform Enterprise is an enterprise product and requires a valid license string before it can start. Set it with `export TFE_LICENSE='<your_license_string>'` before running `hal terraform create`. You can also deploy a second TFE instance with `hal terraform create --target twin` if you want to test multi-instance federation.
 >
 > [Terraform Enterprise licensing →](https://developer.hashicorp.com/terraform/enterprise/deploy/reference-architecture)
 

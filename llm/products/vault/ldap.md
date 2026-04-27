@@ -44,8 +44,8 @@
     }
   ],
   "actionCommands": [
-    "hal vault ldap --enable",
-    "hal vault ldap --force"
+    "hal vault ldap enable",
+    "hal vault ldap update"
   ],
   "verifyCommands": [
     "hal vault ldap",
@@ -86,7 +86,7 @@
     "The lab includes root credential rotation for the LDAP secrets engine bind account."
   ],
   "notes": [
-    "If teardown is blocked, prefer hal vault ldap --force so lease cleanup runs before container removal.",
+    "If teardown is blocked, prefer hal vault ldap update so lease cleanup runs before container removal.",
     "When the user asks only about human login, keep the answer anchored on auth/ldap and do not overexplain the secrets engine path unless relevant.",
     "Use phpLDAPadmin as the UI reference point when the user wants to inspect seeded users or groups."
   ],
