@@ -48,9 +48,9 @@
     }
   ],
   "actionCommands": [
-    "hal vault database --enable",
-    "hal vault database --enable --backend mariadb",
-    "hal vault database --force"
+    "hal vault database enable",
+    "hal vault database enable --backend mariadb",
+    "hal vault database update"
   ],
   "verifyCommands": [
     "hal vault database",
