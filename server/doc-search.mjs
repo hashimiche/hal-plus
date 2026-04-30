@@ -1,170 +1,103 @@
+// doc-search.mjs — v2
+//
+// Pre-built, section-level corpus with MiniSearch BM25 + Ollama embedding rerank.
+// Completely MCP-independent: retrieval is driven by conversation context alone,
+// not by what MCP happened to return. Works regardless of which MCPs are connected.
+//
+// Architecture:
+//   Build phase (async at startup, cached 24h on disk):
+//     crawl product roots -> multi-level subpages -> heading-aware chunks -> MiniSearch index
+//   Query phase (each chat turn):
+//     conversation context query -> MiniSearch BM25 top-N -> Ollama embed rerank top-K
+//
+// Exports:
+//   initCorpus()                         -- call once at server startup
+//   retrieveDocsForPrompt(p, ctx, opts)  -- main retrieval entry point
+//   buildDocSearchPromptSupplement(res)  -- format chunks for LLM system prompt
+
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { collectBehaviorResources } from "./behavior-registry.mjs";
+import MiniSearch from "minisearch";
 
-const DOC_SEARCH_ENABLED = String(process.env.HAL_DOC_SEARCH_ENABLED || "true").toLowerCase() !== "false";
+// Configuration
+
+const DOC_SEARCH_ENABLED =
+  String(process.env.HAL_DOC_SEARCH_ENABLED || "true").toLowerCase() !== "false";
 const DOC_SEARCH_MODE = String(process.env.HAL_DOC_SEARCH_MODE || "hybrid").toLowerCase();
 const DOC_SEARCH_TOP_N = Number(process.env.HAL_DOC_SEARCH_TOP_N || 20);
 const DOC_SEARCH_TOP_K = Number(process.env.HAL_DOC_SEARCH_TOP_K || 6);
-const DOC_SEARCH_MAX_DOCS = Number(process.env.HAL_DOC_SEARCH_MAX_DOCS || 4);
-const DOC_SEARCH_MIN_DOC_SCORE = Number(process.env.HAL_DOC_SEARCH_MIN_DOC_SCORE || 2);
-const DOC_SEARCH_EMBED_MODEL = process.env.HAL_DOC_SEARCH_EMBED_MODEL || "nomic-embed-text";
-const DOC_SEARCH_CACHE_TTL_MS = Number(process.env.HAL_DOC_SEARCH_CACHE_TTL_MS || 12 * 60 * 60 * 1000);
-const DOC_SEARCH_CACHE_DIR = path.resolve(process.cwd(), process.env.HAL_DOC_SEARCH_CACHE_DIR || ".hal-plus-cache/doc-search");
-const DOC_SEARCH_DISCOVER_SUBPAGES = String(process.env.HAL_DOC_SEARCH_DISCOVER_SUBPAGES || "true").toLowerCase() !== "false";
-const DOC_SEARCH_DISCOVER_MAX = Number(process.env.HAL_DOC_SEARCH_DISCOVER_MAX || 30);
+const DOC_SEARCH_EMBED_MODEL =
+  process.env.HAL_DOC_SEARCH_EMBED_MODEL || "nomic-embed-text";
+const DOC_SEARCH_CACHE_DIR = path.resolve(
+  process.cwd(),
+  process.env.HAL_DOC_SEARCH_CACHE_DIR || ".hal-plus-cache/doc-search"
+);
+const DOC_SEARCH_CORPUS_TTL_MS = Number(
+  process.env.HAL_DOC_SEARCH_CORPUS_TTL_MS || 24 * 60 * 60 * 1000
+);
+const DOC_SEARCH_FETCH_TTL_MS = Number(
+  process.env.HAL_DOC_SEARCH_FETCH_TTL_MS || 12 * 60 * 60 * 1000
+);
+const DOC_SEARCH_CRAWL_DEPTH = Number(process.env.HAL_DOC_SEARCH_CRAWL_DEPTH || 2);
+const DOC_SEARCH_MAX_PAGES = Number(process.env.HAL_DOC_SEARCH_MAX_PAGES || 80);
+const DOC_SEARCH_CORPUS_VERSION = "3";
 
-const DOC_ALLOWED_HOSTS = new Set(["developer.hashicorp.com", "www.hashicorp.com", "hashicorp.com"]);
+const DOC_ALLOWED_HOSTS = new Set([
+  "developer.hashicorp.com",
+  "www.hashicorp.com",
+  "hashicorp.com",
+]);
 
-const PRODUCT_DOC_RULES = {
+// Product tree definitions
+// roots    -- entry points; BFS crawl starts here
+// prefixes -- path must start with one of these to be followed
+// depth    -- crawl depth per product (0 = root only, 2 = root + 2 levels deep)
+// maxPages -- max pages to crawl per product
+
+const PRODUCT_TREE = {
   terraform: {
     label: "Terraform",
-    discoverRoots: ["/terraform/enterprise"],
-    pathPrefixes: ["/terraform", "/validated-patterns/terraform"],
-    intentTerms: ["workspace", "vcs", "agent", "oauth", "gitlab", "github", "run"]
+    roots: [
+      "https://developer.hashicorp.com/terraform/enterprise",
+      "https://developer.hashicorp.com/terraform/cloud-docs",
+    ],
+    prefixes: ["/terraform"],
+    depth: DOC_SEARCH_CRAWL_DEPTH,
+    maxPages: DOC_SEARCH_MAX_PAGES,
+    kind: "official",
   },
   vault: {
     label: "Vault",
-    discoverRoots: ["/vault"],
-    pathPrefixes: ["/vault", "/validated-patterns/vault"],
-    intentTerms: ["auth", "token", "policy", "kv", "jwt", "oidc", "kubernetes", "ldap", "audit"]
-  }
-};
-
-const DOC_POLICY_MAX_LINKS = 2;
-
-const PRODUCT_FALLBACK_DOC = {
-  vault: {
-    title: "Vault Docs",
-    href: "https://developer.hashicorp.com/vault",
+    roots: [
+      // Root pages — establish top-level nav and link graph
+      "https://developer.hashicorp.com/vault/docs",
+      "https://developer.hashicorp.com/vault/tutorials",
+      // Explicit seeds for deep subtrees that matter for HAL workflows
+      // These are depth=2 from the roots in practice but unreliable via nav links
+      "https://developer.hashicorp.com/vault/docs/auth",
+      "https://developer.hashicorp.com/vault/docs/auth/jwt",
+      "https://developer.hashicorp.com/vault/docs/auth/oidc",
+      "https://developer.hashicorp.com/vault/docs/auth/kubernetes",
+      "https://developer.hashicorp.com/vault/docs/auth/ldap",
+      "https://developer.hashicorp.com/vault/docs/secrets/databases",
+      "https://developer.hashicorp.com/vault/docs/audit",
+      "https://developer.hashicorp.com/vault/docs/deploy/kubernetes/vso",
+      "https://developer.hashicorp.com/vault/docs/internals/telemetry",
+    ],
+    prefixes: ["/vault"],
+    depth: DOC_SEARCH_CRAWL_DEPTH,
+    maxPages: DOC_SEARCH_MAX_PAGES,
     kind: "official",
-    description: "Official Vault documentation."
   },
-  terraform: {
-    title: "Terraform Enterprise Docs",
-    href: "https://developer.hashicorp.com/terraform/enterprise",
-    kind: "official",
-    description: "Official Terraform Enterprise documentation."
-  }
 };
 
-const INTENT_DOC_POLICY = {
-  vault: [
-    {
-      id: "vault_vso",
-      terms: ["vso", "vault secrets operator", "secret operator", "k8s", "kubernetes", "csi"],
-      docs: [
-        {
-          title: "Vault Secrets Operator (VSO)",
-          href: "https://developer.hashicorp.com/vault/docs/deploy/kubernetes/vso",
-          kind: "official",
-          description: "Deploy and operate Vault Secrets Operator."
-        },
-        {
-          title: "VSO Tutorial",
-          href: "https://developer.hashicorp.com/vault/tutorials/kubernetes-introduction/vault-secrets-operator?productSlug=vault&tutorialSlug=kubernetes&tutorialSlug=vault-secrets-operator",
-          kind: "official",
-          description: "Hands-on tutorial for Vault Secrets Operator."
-        }
-      ]
-    },
-    {
-      id: "vault_monitoring",
-      terms: ["monitor", "monitoring", "observability", "grafana", "prometheus", "loki", "dashboard"],
-      docs: [
-        {
-          title: "Vault Observability at Scale",
-          href: "https://www.hashicorp.com/en/blog/hashicorp-vault-observability-monitoring-vault-at-scale",
-          kind: "guide",
-          description: "Monitoring and observability guidance for Vault."
-        },
-        {
-          title: "Vault Telemetry",
-          href: "https://developer.hashicorp.com/vault/docs/internals/telemetry",
-          kind: "official",
-          description: "Vault telemetry metrics and monitoring settings."
-        }
-      ]
-    }
-  ],
-  terraform: [
-    {
-      id: "tfe_monitoring",
-      terms: ["monitor", "monitoring", "observability", "grafana", "prometheus", "loki", "dashboard"],
-      docs: [
-        {
-          title: "Terraform Enterprise Docs",
-          href: "https://developer.hashicorp.com/terraform/enterprise",
-          kind: "official",
-          description: "Official Terraform Enterprise documentation."
-        },
-        {
-          title: "Terraform Enterprise Solution Design Guide",
-          href: "https://developer.hashicorp.com/validated-designs/terraform-solution-design-guides-terraform-enterprise",
-          kind: "guide",
-          description: "Architecture and operating guidance for TFE."
-        }
-      ]
-    }
-  ]
-};
+// In-memory corpus state
+// productId -> { index: MiniSearch, chunkMap: Map<id, chunk>, builtAt: number }
+const corpusState = new Map();
+const buildInProgress = new Set();
 
-const chunkCache = new Map();
-
-function uniqueByHref(items) {
-  const seen = new Set();
-  const output = [];
-  for (const item of items || []) {
-    const href = String(item?.href || "").trim();
-    if (!href || seen.has(href)) {
-      continue;
-    }
-    seen.add(href);
-    output.push(item);
-  }
-  return output;
-}
-
-function contextProductId(context) {
-  return String(context?.product?.product || context?.primary?.product || "").toLowerCase();
-}
-
-function hasAnyTerm(prompt, terms) {
-  const lower = String(prompt || "").toLowerCase();
-  return (terms || []).some((term) => lower.includes(String(term || "").toLowerCase()));
-}
-
-function policyDocsForPrompt(prompt, context) {
-  const productId = contextProductId(context);
-  const policies = INTENT_DOC_POLICY[productId] || [];
-  for (const policy of policies) {
-    if (hasAnyTerm(prompt, policy.terms)) {
-      return uniqueByHref(policy.docs || []).slice(0, DOC_POLICY_MAX_LINKS);
-    }
-  }
-  return [];
-}
-
-function fallbackDocsForContext(context) {
-  const productId = contextProductId(context);
-  const fallback = PRODUCT_FALLBACK_DOC[productId];
-  return fallback ? [fallback] : [];
-}
-
-function applyDocPolicy(prompt, context, docs) {
-  const mapped = policyDocsForPrompt(prompt, context);
-  if (mapped.length > 0) {
-    return mapped.slice(0, DOC_POLICY_MAX_LINKS);
-  }
-
-  const filtered = uniqueByHref(docs || []).slice(0, DOC_POLICY_MAX_LINKS);
-  if (filtered.length > 0) {
-    return filtered;
-  }
-
-  return fallbackDocsForContext(context).slice(0, DOC_POLICY_MAX_LINKS);
-}
+// File path helpers
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -172,50 +105,54 @@ function ensureDir(dirPath) {
   }
 }
 
+function safeProductId(productId) {
+  return String(productId || "").replace(/[^a-z0-9_-]/g, "_").slice(0, 64);
+}
+
+function productCacheDir(productId) {
+  return path.join(DOC_SEARCH_CACHE_DIR, safeProductId(productId));
+}
+
+function manifestPath(productId) {
+  return path.join(productCacheDir(productId), "manifest.json");
+}
+
+function chunksFilePath(productId) {
+  return path.join(productCacheDir(productId), "chunks.json");
+}
+
+function indexFilePath(productId) {
+  return path.join(productCacheDir(productId), "index.json");
+}
+
+function fetchCacheFilePath(url) {
+  const hash = crypto.createHash("sha256").update(String(url || "")).digest("hex");
+  return path.join(DOC_SEARCH_CACHE_DIR, "fetch-cache", `${hash}.json`);
+}
+
+// URL / HTML utilities
+
 function safeParseUrl(value) {
   try {
-    return new URL(value);
+    return new URL(String(value || ""));
   } catch {
     return null;
   }
 }
 
-function isProductOfficialResource(resource, context) {
-  const href = String(resource?.href || "").trim();
-  if (!href) {
-    return false;
-  }
-
-  const productId = String(context?.product?.product || context?.primary?.product || "").toLowerCase();
-  const productRule = PRODUCT_DOC_RULES[productId];
-  if (!productRule) {
-    return false;
-  }
-
-  const url = safeParseUrl(href);
-  if (!url || !(url.protocol === "https:" || url.protocol === "http:")) {
-    return false;
-  }
-
-  const host = url.hostname.toLowerCase();
-  if (!DOC_ALLOWED_HOSTS.has(host)) {
-    return false;
-  }
-
-  if (host !== "developer.hashicorp.com") {
-    return true;
-  }
-
-  const normalizedPath = String(url.pathname || "").replace(/\/+$/, "");
-  return productRule.pathPrefixes.some((prefix) => normalizedPath.startsWith(prefix));
+function normalizePageHref(parsedUrl) {
+  return `${parsedUrl.origin}${parsedUrl.pathname}`.replace(/\/+$/, "");
 }
 
-function hashForUrl(url) {
-  return crypto.createHash("sha256").update(url).digest("hex");
+function isDocPathname(pathname, prefixes) {
+  const norm = String(pathname || "").replace(/\/+$/, "");
+  return prefixes.some((prefix) => norm.startsWith(prefix));
 }
 
-function cacheFilePath(url) {
-  return path.join(DOC_SEARCH_CACHE_DIR, "web", `${hashForUrl(url)}.json`);
+function isAsset(pathname) {
+  return /\.(png|jpg|jpeg|gif|svg|webp|pdf|zip|css|js|woff|woff2|ttf|eot)$/i.test(
+    String(pathname || "")
+  );
 }
 
 function decodeEntities(input) {
@@ -244,768 +181,590 @@ function stripHtml(input) {
   );
 }
 
-function normalizeAnchorValue(value) {
-  return String(value || "")
-    .trim()
-    .replace(/^#/, "")
-    .replace(/\s+/g, "-");
-}
-
-function withFragmentHref(href, anchor) {
-  const normalizedAnchor = normalizeAnchorValue(anchor);
-  if (!normalizedAnchor) {
-    return href;
-  }
-
-  const base = String(href || "").split("#")[0];
-  return `${base}#${normalizedAnchor}`;
-}
-
-function contentTitle(raw) {
-  const match = String(raw || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (!match) {
-    return "Untitled";
-  }
+function extractPageTitle(html) {
+  const match = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!match) return "Untitled";
   return stripHtml(match[1]).slice(0, 160) || "Untitled";
 }
 
-function tokenize(input) {
-  return String(input || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9_\-\s]/g, " ")
-    .split(/\s+/)
-    .filter((token) => token.length > 1);
-}
-
-function intentCueBoost(prompt, chunk) {
-  const lowerPrompt = String(prompt || "").toLowerCase();
-  const metadata = [chunk?.title, chunk?.sectionTitle, chunk?.sourceTitle, chunk?.href, chunk?.content]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  let score = 0;
-
-  if ((lowerPrompt.includes("k8s") || lowerPrompt.includes("kubernetes")) && (metadata.includes("k8s") || metadata.includes("kubernetes"))) {
-    score += 2.2;
-  }
-
-  if ((lowerPrompt.includes("auth engine") || lowerPrompt.includes("auth method")) && (metadata.includes(" auth ") || metadata.includes("/auth/"))) {
-    score += 1.6;
-  }
-
-  if ((lowerPrompt.includes("database secrets") || lowerPrompt.includes("db credentials")) && (metadata.includes("database") || metadata.includes("/secrets/databases"))) {
-    score += 2.0;
-  }
-
-  if (lowerPrompt.includes("oidc") && metadata.includes("oidc")) {
-    score += 1.8;
-  }
-
-  if (lowerPrompt.includes("jwt") && metadata.includes("jwt")) {
-    score += 1.8;
-  }
-
-  if (lowerPrompt.includes("ldap") && metadata.includes("ldap")) {
-    score += 1.8;
-  }
-
-  if (lowerPrompt.includes("mariadb") && metadata.includes("mariadb")) {
-    score += 1.8;
-  }
-
-  return score;
-}
-
-function promptHasAny(prompt, terms) {
-  const lower = String(prompt || "").toLowerCase();
-  return (terms || []).some((term) => lower.includes(String(term || "").toLowerCase()));
-}
-
-const STOPWORDS = new Set([
-  "the",
-  "and",
-  "for",
-  "with",
-  "this",
-  "that",
-  "from",
-  "into",
-  "what",
-  "when",
-  "where",
-  "how",
-  "why",
-  "should",
-  "would",
-  "could",
-  "give",
-  "show",
-  "setup",
-  "set",
-  "use",
-  "using",
-  "help",
-  "please",
-  "about",
-  "your",
-  "have",
-  "there",
-  "they",
-  "them",
-  "then",
-  "than",
-  "also",
-  "just",
-  "some",
-  "kind",
-  "question"
-]);
-
-function extractPromptTerms(prompt) {
-  const tokens = tokenize(prompt).filter((token) => token.length >= 3 && !STOPWORDS.has(token));
-  return [...new Set(tokens)];
-}
-
-function selectProductResources(context, prompt) {
-  const selected = Array.isArray(context?.selected) ? context.selected : [];
-  const primary = context?.primary || null;
-  const product = context?.product || null;
-
-  let resources = [];
-  if (primary && primary.subcommand && primary.subcommand !== "product") {
-    resources = []
-      .concat(Array.isArray(primary.resources) ? primary.resources : [])
-      .concat(Array.isArray(product?.resources) ? product.resources : []);
-  } else if (selected.length > 0) {
-    resources = selected.flatMap((behavior) => (Array.isArray(behavior?.resources) ? behavior.resources : []));
-  } else {
-    resources = collectBehaviorResources(context);
-  }
-
-  return uniqueByHref(resources).filter((resource) => isProductOfficialResource(resource, context));
-}
-
-function extractHrefListFromHtml(html) {
-  const hrefs = [];
-  const regex = /<a\b[^>]*href=["']([^"']+)["'][^>]*>/gi;
-  let match;
-  while ((match = regex.exec(String(html || ""))) !== null) {
-    const href = String(match[1] || "").trim();
-    if (href) {
-      hrefs.push(href);
-    }
-  }
-  return hrefs;
-}
-
-function getDiscoverableRootRule(resource, context) {
-  const url = safeParseUrl(resource?.href || "");
-  if (!url) {
-    return null;
-  }
-
-  const productId = String(context?.product?.product || context?.primary?.product || "").toLowerCase();
-  const productRule = PRODUCT_DOC_RULES[productId];
-  if (!productRule) {
-    return null;
-  }
-
-  const host = String(url.hostname || "").toLowerCase();
-  const normalizedPath = String(url.pathname || "").replace(/\/+$/, "");
-  if (host !== "developer.hashicorp.com") {
-    return null;
-  }
-
-  const matchedRoot = productRule.discoverRoots.find((root) => normalizedPath === root);
-  if (!matchedRoot) {
-    return null;
-  }
-
-  return {
-    productId,
-    label: productRule.label,
-    rootPath: matchedRoot,
-    intentTerms: productRule.intentTerms || []
-  };
-}
-
-function subpageResourceFromUrl(url, parentResource, discoverRule) {
-  const slug = String(url.pathname || "").split("/").filter(Boolean).pop() || "page";
-  const titleFromSlug = slug
-    .split("-")
-    .filter(Boolean)
-    .map((piece) => piece.charAt(0).toUpperCase() + piece.slice(1))
-    .join(" ");
-
-  const label = discoverRule?.label || "Product";
-  const parentTitle = parentResource?.title || `${label} Docs`;
-
-  return {
-    title: `${label} ${titleFromSlug}`,
-    href: url.toString(),
-    kind: parentResource?.kind || "official",
-    description: `Discovered child page from ${parentTitle}.`
-  };
-}
-
-async function discoverProductSubpages(resource, prompt, context) {
-  const discoverRule = getDiscoverableRootRule(resource, context);
-  if (!DOC_SEARCH_DISCOVER_SUBPAGES || !discoverRule) {
-    return [];
-  }
-
-  const facetTerms = extractPromptTerms(prompt);
-
-  let fetched;
-  try {
-    fetched = await readOrFetchUrl(resource.href);
-  } catch {
-    return [];
-  }
-
-  const rootUrl = safeParseUrl(resource.href);
-  if (!rootUrl) {
-    return [];
-  }
-
-  const rawLinks = extractHrefListFromHtml(String(fetched?.body || ""));
-  const discovered = [];
-
-  for (const rawHref of rawLinks) {
-    let parsed;
+function extractLinksFromHtml(html, baseUrl) {
+  const links = [];
+  const regex = /<a\b[^>]*\shref=["']([^"'#][^"']*?)["'][^>]*>/gi;
+  let m;
+  while ((m = regex.exec(String(html || ""))) !== null) {
     try {
-      parsed = new URL(rawHref, rootUrl);
+      const resolved = new URL(String(m[1] || "").trim(), baseUrl);
+      links.push(resolved);
     } catch {
-      continue;
-    }
-
-    const host = String(parsed.hostname || "").toLowerCase();
-    if (host !== "developer.hashicorp.com") {
-      continue;
-    }
-
-    const pathname = String(parsed.pathname || "").replace(/\/+$/, "");
-    if (!pathname.startsWith(`${discoverRule.rootPath}/`)) {
-      continue;
-    }
-
-    if (pathname === discoverRule.rootPath) {
-      continue;
-    }
-
-    if (/\.(png|jpg|jpeg|gif|svg|webp|pdf|zip)$/i.test(pathname)) {
-      continue;
-    }
-
-    const href = `${parsed.origin}${pathname}`;
-    const candidateText = `${pathname} ${href}`.toLowerCase();
-    const termHits = facetTerms.reduce((hits, term) => (candidateText.includes(term) ? hits + 1 : hits), 0);
-    const intentBoost = promptHasAny(prompt, discoverRule.intentTerms) ? 1 : 0;
-    const score = termHits + intentBoost;
-
-    discovered.push({ href, score, parsed });
-  }
-
-  const unique = [];
-  const seen = new Set();
-  for (const entry of discovered.sort((a, b) => b.score - a.score)) {
-    if (seen.has(entry.href)) {
-      continue;
-    }
-    seen.add(entry.href);
-    unique.push(subpageResourceFromUrl(entry.parsed, resource, discoverRule));
-    if (unique.length >= DOC_SEARCH_DISCOVER_MAX) {
-      break;
+      // skip malformed href
     }
   }
-
-  return unique.slice(0, DOC_SEARCH_DISCOVER_MAX);
+  return links;
 }
 
-async function expandResourcesWithDiscoveredSubpages(resources, prompt, context) {
-  const base = uniqueByHref(resources || []);
-  const expanded = [...base];
+// Raw fetch with disk cache
 
-  for (const resource of base) {
-    const discovered = await discoverProductSubpages(resource, prompt, context);
-    expanded.push(...discovered);
+async function fetchWithCache(url) {
+  const parsed = safeParseUrl(url);
+  if (!parsed || !DOC_ALLOWED_HOSTS.has(parsed.hostname.toLowerCase())) {
+    throw new Error(`URL not in allowed hosts: ${url}`);
   }
 
-  return uniqueByHref(expanded);
-}
-
-function toTermFrequency(tokens) {
-  const map = new Map();
-  for (const token of tokens) {
-    map.set(token, (map.get(token) || 0) + 1);
-  }
-  return map;
-}
-
-function cosineSimilarity(vecA, vecB) {
-  if (!Array.isArray(vecA) || !Array.isArray(vecB) || vecA.length === 0 || vecB.length === 0 || vecA.length !== vecB.length) {
-    return 0;
-  }
-
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < vecA.length; i += 1) {
-    const a = Number(vecA[i] || 0);
-    const b = Number(vecB[i] || 0);
-    dot += a * b;
-    normA += a * a;
-    normB += b * b;
-  }
-
-  if (normA <= 0 || normB <= 0) {
-    return 0;
-  }
-
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-async function readOrFetchUrl(url) {
-  ensureDir(path.join(DOC_SEARCH_CACHE_DIR, "web"));
-  const filePath = cacheFilePath(url);
+  ensureDir(path.join(DOC_SEARCH_CACHE_DIR, "fetch-cache"));
+  const filePath = fetchCacheFilePath(url);
 
   if (fs.existsSync(filePath)) {
     try {
       const cached = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      if (Date.now() - Number(cached?.fetchedAt || 0) < DOC_SEARCH_CACHE_TTL_MS) {
+      if (Date.now() - Number(cached?.fetchedAt || 0) < DOC_SEARCH_FETCH_TTL_MS) {
         return cached;
       }
     } catch {
-      // Fall through to refetch if cache is corrupt.
+      // corrupt cache entry -- fall through to refetch
     }
   }
 
-  const response = await fetch(url, { method: "GET" });
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { "User-Agent": "HAL-Plus-DocSearch/2 (educational lab tool)" },
+  });
   if (!response.ok) {
-    throw new Error(`Doc fetch failed for ${url}: ${response.status}`);
+    throw new Error(`Fetch failed for ${url}: ${response.status}`);
   }
 
   const body = await response.text();
   const contentType = response.headers.get("content-type") || "text/html";
-  const payload = {
-    url,
-    contentType,
-    body,
-    fetchedAt: Date.now()
-  };
+  const payload = { url, contentType, body, fetchedAt: Date.now() };
 
-  fs.writeFileSync(filePath, JSON.stringify(payload), "utf8");
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(payload), "utf8");
+  } catch {
+    // best-effort disk write; continue without caching
+  }
+
   return payload;
 }
 
-function splitPlainTextIntoChunks(text, maxLen = 1100) {
+// Heading-aware chunking
+//
+// For each heading (H1-H6) in the page HTML:
+//   - Build a hierarchical heading path: "Vault Docs > Auth Methods > JWT Auth"
+//   - Extract the content block between this heading and the next
+//   - Split long content into sub-chunks (max ~900 chars each)
+//   - Extract code blocks within the section as separate typed chunks
+//   - Emit a fragment href pointing directly to the section anchor
+//
+// This gives section-level precision: callers get href#anchor, not just the page URL.
+
+function normalizeAnchor(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^#/, "")
+    .replace(/\s+/g, "-")
+    .toLowerCase();
+}
+
+function hrefWithFragment(pageHref, anchor) {
+  const clean = normalizeAnchor(anchor);
+  if (!clean) return pageHref;
+  const base = String(pageHref || "").split("#")[0];
+  return `${base}#${clean}`;
+}
+
+function splitIntoTextChunks(text, maxLen) {
+  const max = maxLen || 900;
   const paragraphs = String(text || "")
     .split(/\n\n+/)
-    .map((part) => part.trim())
+    .map((p) => p.trim())
     .filter(Boolean);
 
   const chunks = [];
   let buffer = "";
 
-  for (const paragraph of paragraphs) {
-    const candidate = buffer ? `${buffer}\n\n${paragraph}` : paragraph;
-    if (candidate.length <= maxLen) {
+  for (const para of paragraphs) {
+    const candidate = buffer ? `${buffer}\n\n${para}` : para;
+    if (candidate.length <= max) {
       buffer = candidate;
       continue;
     }
-
     if (buffer) {
       chunks.push(buffer);
       buffer = "";
     }
-
-    if (paragraph.length <= maxLen) {
-      buffer = paragraph;
+    if (para.length <= max) {
+      buffer = para;
       continue;
     }
-
-    for (let i = 0; i < paragraph.length; i += maxLen) {
-      chunks.push(paragraph.slice(i, i + maxLen));
+    for (let i = 0; i < para.length; i += max) {
+      chunks.push(para.slice(i, i + max));
     }
   }
 
-  if (buffer) {
-    chunks.push(buffer);
+  if (buffer) chunks.push(buffer);
+  return chunks;
+}
+
+function chunksFromPage(html, pageHref, sourceTitle, productId, kind) {
+  const pageKind = kind || "official";
+  const source = String(html || "");
+  const chunks = [];
+
+  const headingRegex = /<(h[1-6])([^>]*)>([\s\S]*?)<\/\1>/gi;
+  const matches = [];
+  let m;
+  while ((m = headingRegex.exec(source)) !== null) {
+    matches.push({
+      tag: String(m[1]).toLowerCase(),
+      attrs: String(m[2] || ""),
+      innerHtml: String(m[3] || ""),
+      index: m.index,
+      endIndex: headingRegex.lastIndex,
+    });
+  }
+
+  if (matches.length === 0) return chunks;
+
+  // Stack to track heading hierarchy for building headingPath.
+  const headingStack = [];
+
+  for (let i = 0; i < matches.length; i++) {
+    const h = matches[i];
+    const level = parseInt(h.tag[1], 10);
+    const sectionTitle = stripHtml(h.innerHtml).replace(/\s+/g, " ").trim();
+    if (!sectionTitle) continue;
+
+    while (
+      headingStack.length > 0 &&
+      headingStack[headingStack.length - 1].level >= level
+    ) {
+      headingStack.pop();
+    }
+    headingStack.push({ level, title: sectionTitle });
+
+    const headingPath = headingStack.map((s) => s.title).join(" > ");
+
+    const idMatch = h.attrs.match(/\sid=["']([^"']+)["']/i);
+    const anchorLinkMatch = h.innerHtml.match(/href=["']#([^"']+)["']/i);
+    const nestedIdMatch = h.innerHtml.match(/\sid=["']([^"']+)["']/i);
+    const anchor =
+      idMatch?.[1] || anchorLinkMatch?.[1] || nestedIdMatch?.[1] || sectionTitle;
+    const href = hrefWithFragment(pageHref, anchor);
+
+    const next = matches[i + 1];
+    const sectionHtml = source.slice(h.endIndex, next ? next.index : source.length);
+    const sectionText = stripHtml(sectionHtml).trim();
+
+    if (sectionText) {
+      const textParts = splitIntoTextChunks(sectionText, 900);
+      for (let ci = 0; ci < textParts.length; ci++) {
+        const content = textParts[ci];
+        if (!content) continue;
+        chunks.push({
+          id: `${pageHref}#h${i + 1}-t${ci + 1}`,
+          type: "text",
+          product: productId,
+          sourceTitle,
+          sectionTitle,
+          headingPath,
+          href,
+          kind: pageKind,
+          language: "text",
+          content,
+        });
+      }
+    }
+
+    // Code blocks within this section.
+    const codeRegex =
+      /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/gi;
+    let cMatch;
+    let codeIndex = 0;
+    while ((cMatch = codeRegex.exec(sectionHtml)) !== null) {
+      const attrs = String(cMatch[1] || "");
+      const raw = decodeEntities(String(cMatch[2] || ""))
+        .replace(/\r/g, "")
+        .trim();
+      if (!raw || raw.length < 20) continue;
+      const langMatch =
+        attrs.match(/language-([a-z0-9_-]+)/i) ||
+        attrs.match(/lang(?:uage)?=["']?([a-z0-9_-]+)/i);
+      const lang = langMatch ? String(langMatch[1]).toLowerCase() : "text";
+      chunks.push({
+        id: `${pageHref}#h${i + 1}-c${++codeIndex}`,
+        type: "code",
+        product: productId,
+        sourceTitle,
+        sectionTitle,
+        headingPath,
+        href,
+        kind: pageKind,
+        language: lang,
+        content: raw.slice(0, 1200),
+      });
+    }
   }
 
   return chunks;
 }
 
-function extractSectionsFromHtml(html, resource, title) {
-  const source = String(html || "");
-  const headingRegex = /<(h[1-6])([^>]*)>([\s\S]*?)<\/\1>/gi;
-  const matches = [];
-  let match;
+// Multi-level BFS crawler
+//
+// Starts from each product root, follows same-host/same-prefix links up to
+// `depth` levels deep, capped at `maxPages` pages. Each page is fetched once
+// (disk-cached) and chunked with chunksFromPage().
 
-  while ((match = headingRegex.exec(source)) !== null) {
-    matches.push({
-      tag: String(match[1] || "h2").toLowerCase(),
-      attrs: String(match[2] || ""),
-      innerHtml: String(match[3] || ""),
-      index: match.index,
-      endIndex: headingRegex.lastIndex
-    });
-  }
+async function crawlProduct(productId, productDef) {
+  const visited = new Set();
+  const queue = productDef.roots.map((root) => ({ url: root, depth: 0 }));
+  const allChunks = [];
 
-  if (matches.length === 0) {
-    return [];
-  }
+  while (queue.length > 0 && visited.size < productDef.maxPages) {
+    const { url, depth } = queue.shift();
+    const pageHref = String(url).split("#")[0].replace(/\/+$/, "");
 
-  const sections = [];
-  for (let i = 0; i < matches.length; i += 1) {
-    const current = matches[i];
-    const next = matches[i + 1];
-    const sectionHtml = source.slice(current.endIndex, next ? next.index : source.length);
-    const sectionTitle = stripHtml(current.innerHtml).replace(/\s+/g, " ").trim();
-    const sectionText = stripHtml(sectionHtml);
-    const idMatch = current.attrs.match(/\sid=["']([^"']+)["']/i);
-    const anchorLinkMatch = current.innerHtml.match(/href=["']#([^"']+)["']/i);
-    const nestedIdMatch = current.innerHtml.match(/\sid=["']([^"']+)["']/i);
-    const anchor = normalizeAnchorValue(idMatch?.[1] || anchorLinkMatch?.[1] || nestedIdMatch?.[1] || sectionTitle.toLowerCase());
-    const href = withFragmentHref(resource.href, anchor);
+    if (visited.has(pageHref)) continue;
 
-    if (!sectionTitle && !sectionText) {
+    const parsed = safeParseUrl(pageHref);
+    if (!parsed) continue;
+    if (!DOC_ALLOWED_HOSTS.has(parsed.hostname.toLowerCase())) continue;
+    if (!isDocPathname(parsed.pathname, productDef.prefixes)) continue;
+    if (isAsset(parsed.pathname)) continue;
+
+    visited.add(pageHref);
+
+    let fetched;
+    try {
+      fetched = await fetchWithCache(pageHref);
+    } catch {
       continue;
     }
 
-    const chunkTexts = splitPlainTextIntoChunks(sectionText || sectionTitle, 900);
-    for (let chunkIndex = 0; chunkIndex < chunkTexts.length; chunkIndex += 1) {
-      const content = chunkTexts[chunkIndex];
-      if (!content) {
-        continue;
-      }
+    const html = String(fetched?.body || "");
+    if (!html) continue;
 
-      sections.push({
-        id: `${resource.href}#section-${i + 1}-${chunkIndex + 1}`,
-        type: "text",
-        content,
-        title,
-        sourceTitle: resource.title || title,
-        sectionTitle: sectionTitle || title,
-        href,
-        kind: resource.kind || "guide",
-        language: "text"
-      });
-    }
-  }
+    const title = extractPageTitle(html);
+    const pageChunks = chunksFromPage(html, pageHref, title, productId, productDef.kind);
+    allChunks.push(...pageChunks);
 
-  return sections;
-}
-
-function extractCodeBlocksFromHtml(html) {
-  const blocks = [];
-  const regex = /<pre[^>]*>\s*<code([^>]*)>([\s\S]*?)<\/code>\s*<\/pre>/gi;
-  let match;
-
-  while ((match = regex.exec(String(html || ""))) !== null) {
-    const attrs = String(match[1] || "");
-    const raw = decodeEntities(match[2] || "")
-      .replace(/\r/g, "")
-      .trim();
-    if (!raw) {
-      continue;
-    }
-
-    const langMatch = attrs.match(/language-([a-z0-9_\-]+)/i) || attrs.match(/lang(?:uage)?=["']?([a-z0-9_\-]+)/i);
-    blocks.push({
-      language: langMatch ? String(langMatch[1]).toLowerCase() : "text",
-      content: raw
-    });
-  }
-
-  return blocks;
-}
-
-function normalizeFetchedDoc(resource, fetched) {
-  const contentType = String(fetched?.contentType || "").toLowerCase();
-  const body = String(fetched?.body || "");
-  const title = contentType.includes("html") ? contentTitle(body) : resource?.title || "Untitled";
-  const plainText = contentType.includes("html") ? stripHtml(body) : String(body || "");
-  const sectionChunks = contentType.includes("html") ? extractSectionsFromHtml(body, resource, title) : [];
-  const baseChunks = (sectionChunks.length > 0 ? [] : splitPlainTextIntoChunks(plainText)).map((content, index) => ({
-    id: `${resource.href}#text-${index + 1}`,
-    type: "text",
-    content,
-    title,
-    sourceTitle: resource.title || title,
-    sectionTitle: title,
-    href: resource.href,
-    kind: resource.kind || "guide",
-    language: "text"
-  }));
-
-  const codeBlocks = extractCodeBlocksFromHtml(body).map((code, index) => ({
-    id: `${resource.href}#code-${index + 1}`,
-    type: "code",
-    content: code.content,
-    title,
-    sourceTitle: resource.title || title,
-    sectionTitle: title,
-    href: resource.href,
-    kind: resource.kind || "guide",
-    language: code.language || "text"
-  }));
-
-  return [...sectionChunks, ...baseChunks, ...codeBlocks];
-}
-
-async function getResourceChunks(resource) {
-  if (chunkCache.has(resource.href)) {
-    return chunkCache.get(resource.href);
-  }
-
-  try {
-    const fetched = await readOrFetchUrl(resource.href);
-    const chunks = normalizeFetchedDoc(resource, fetched).slice(0, 80);
-    chunkCache.set(resource.href, chunks);
-    return chunks;
-  } catch {
-    chunkCache.set(resource.href, []);
-    return [];
-  }
-}
-
-function lexicalRank(prompt, chunks, topN) {
-  const queryTokens = tokenize(prompt);
-  if (queryTokens.length === 0) {
-    return [];
-  }
-
-  const querySet = new Set(queryTokens);
-  const scored = chunks
-    .map((chunk) => {
-      const text = `${chunk.title}\n${chunk.sectionTitle || ""}\n${chunk.content}`;
-      const tokens = tokenize(text);
-      const tf = toTermFrequency(tokens);
-      let score = 0;
-      for (const token of querySet) {
-        const freq = tf.get(token) || 0;
-        if (freq > 0) {
-          score += 1 + Math.log1p(freq);
+    if (depth < productDef.depth) {
+      const links = extractLinksFromHtml(html, pageHref);
+      for (const link of links) {
+        if (!DOC_ALLOWED_HOSTS.has(link.hostname.toLowerCase())) continue;
+        if (!isDocPathname(link.pathname, productDef.prefixes)) continue;
+        if (isAsset(link.pathname)) continue;
+        const childHref = normalizePageHref(link);
+        if (!visited.has(childHref)) {
+          queue.push({ url: childHref, depth: depth + 1 });
         }
       }
+    }
+  }
 
-      if (chunk.type === "code") {
-        score += 0.35;
-      }
+  return allChunks;
+}
 
-      const lowerContent = text.toLowerCase();
-      if (lowerContent.includes(String(prompt || "").toLowerCase())) {
-        score += 0.8;
-      }
+// MiniSearch index
+//
+// Fields indexed: sectionTitle (boost 2.5), headingPath (boost 1.8), content (boost 1)
+// storeFields are returned by search results and used to reconstruct display data.
+// Full chunk content lives in chunkMap (in-memory); index stores only lightweight metadata.
 
-      score += intentCueBoost(prompt, chunk);
+const MINISEARCH_OPTIONS = {
+  fields: ["sectionTitle", "headingPath", "content"],
+  storeFields: [
+    "href",
+    "sourceTitle",
+    "sectionTitle",
+    "headingPath",
+    "kind",
+    "type",
+    "language",
+  ],
+  searchOptions: {
+    boost: { sectionTitle: 2.5, headingPath: 1.8, content: 1 },
+    fuzzy: 0.1,
+    prefix: true,
+  },
+};
 
-      return { ...chunk, lexicalScore: score };
+function buildIndex(chunks) {
+  const index = new MiniSearch(MINISEARCH_OPTIONS);
+  index.addAll(chunks);
+  return index;
+}
+
+// Corpus build and persistence
+
+async function buildCorpus(productId) {
+  const productDef = PRODUCT_TREE[productId];
+  if (!productDef) return;
+  if (buildInProgress.has(productId)) return;
+  buildInProgress.add(productId);
+
+  try {
+    ensureDir(productCacheDir(productId));
+    console.error(`[doc-search] building corpus for ${productId}...`);
+    const t0 = Date.now();
+
+    const chunks = await crawlProduct(productId, productDef);
+    if (chunks.length === 0) {
+      console.error(`[doc-search] no chunks produced for ${productId}`);
+      return;
+    }
+
+    const index = buildIndex(chunks);
+    const pageCount = new Set(chunks.map((c) => c.href.split("#")[0])).size;
+
+    fs.writeFileSync(chunksFilePath(productId), JSON.stringify(chunks), "utf8");
+    fs.writeFileSync(indexFilePath(productId), JSON.stringify(index), "utf8");
+    fs.writeFileSync(
+      manifestPath(productId),
+      JSON.stringify({
+        productId,
+        builtAt: Date.now(),
+        pageCount,
+        chunkCount: chunks.length,
+        version: DOC_SEARCH_CORPUS_VERSION,
+      }),
+      "utf8"
+    );
+
+    const chunkMap = new Map(chunks.map((c) => [c.id, c]));
+    corpusState.set(productId, { index, chunkMap, builtAt: Date.now() });
+
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.error(
+      `[doc-search] ${productId}: ${chunks.length} chunks from ${pageCount} pages (${elapsed}s)`
+    );
+  } catch (err) {
+    console.error(`[doc-search] corpus build failed for ${productId}: ${err?.message}`);
+  } finally {
+    buildInProgress.delete(productId);
+  }
+}
+
+// Corpus load from disk
+
+function isCorpusStale(productId) {
+  const mp = manifestPath(productId);
+  if (!fs.existsSync(mp)) return true;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(mp, "utf8"));
+    if (String(manifest?.version) !== DOC_SEARCH_CORPUS_VERSION) return true;
+    return Date.now() - Number(manifest?.builtAt || 0) > DOC_SEARCH_CORPUS_TTL_MS;
+  } catch {
+    return true;
+  }
+}
+
+function loadCorpusFromDisk(productId) {
+  const cp = chunksFilePath(productId);
+  const ip = indexFilePath(productId);
+  if (!fs.existsSync(cp) || !fs.existsSync(ip)) return false;
+  try {
+    const chunks = JSON.parse(fs.readFileSync(cp, "utf8"));
+    const index = MiniSearch.loadJSON(fs.readFileSync(ip, "utf8"), MINISEARCH_OPTIONS);
+    const chunkMap = new Map(chunks.map((c) => [c.id, c]));
+    corpusState.set(productId, { index, chunkMap, builtAt: Date.now() });
+    return true;
+  } catch (err) {
+    console.error(`[doc-search] failed to load corpus for ${productId}: ${err?.message}`);
+    return false;
+  }
+}
+
+async function ensureCorpus(productId) {
+  if (corpusState.has(productId)) return;
+  if (!isCorpusStale(productId) && loadCorpusFromDisk(productId)) return;
+  // Block on first use if nothing on disk; subsequent stale rebuilds are async.
+  await buildCorpus(productId);
+}
+
+// Startup corpus init
+//
+// Called once at server startup. Loads fresh corpora from disk into memory
+// synchronously (fast), then triggers async background rebuilds for stale ones.
+// The server starts immediately -- corpus builds do not block app.listen.
+
+export function initCorpus() {
+  if (!DOC_SEARCH_ENABLED) return;
+  for (const productId of Object.keys(PRODUCT_TREE)) {
+    if (!isCorpusStale(productId)) {
+      loadCorpusFromDisk(productId);
+    } else {
+      buildCorpus(productId).catch(() => {});
+    }
+  }
+}
+
+// Query helpers
+//
+// Incorporate the last few conversation turns so document retrieval
+// reflects the evolving topic, not just the current one-liner.
+// This is how hal+ behaves like a dedicated HashiCorp search without
+// requiring the user to type explicit keywords on each turn.
+
+function buildSearchQuery(messages, prompt) {
+  const userTurns = (messages || [])
+    .filter((m) => String(m?.role || "") === "user")
+    .map((m) => String(m?.content || "").trim())
+    .filter(Boolean)
+    .slice(-4);
+  const allText = [...new Set([...userTurns, String(prompt || "").trim()])];
+  return allText.join(" ").slice(0, 800);
+}
+
+function contextProductId(context) {
+  return String(
+    context?.product?.product || context?.primary?.product || ""
+  ).toLowerCase();
+}
+
+// Lexical retrieval
+
+function searchCorpus(productId, query, topN) {
+  const state = corpusState.get(productId);
+  if (!state) return [];
+  // MiniSearch may return more results than `limit` when fuzzy+prefix are both
+  // enabled because scoring traversal doesn't always respect the cap cleanly.
+  // Slice explicitly to guarantee we never send more than topN to the embedder.
+  const results = state.index.search(query, { limit: topN });
+  return results
+    .slice(0, topN)
+    .map((r) => {
+      const full = state.chunkMap.get(r.id);
+      return full ? { ...full, lexicalScore: r.score } : null;
     })
-    .filter((chunk) => chunk.lexicalScore > 0)
-    .sort((left, right) => right.lexicalScore - left.lexicalScore);
+    .filter(Boolean);
+}
 
-  return scored.slice(0, topN);
+// Embedding rerank
+
+function cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length)
+    return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA <= 0 || normB <= 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 async function embedTexts(ollamaBaseUrl, model, input) {
-  if (!Array.isArray(input) || input.length === 0) {
-    return [];
-  }
-
+  if (!Array.isArray(input) || input.length === 0) return [];
   const response = await fetch(`${ollamaBaseUrl}/api/embed`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, input })
+    body: JSON.stringify({ model, input }),
   });
-
-  if (!response.ok) {
-    throw new Error(`Ollama embed failed: ${response.status}`);
-  }
-
+  if (!response.ok) throw new Error(`Ollama embed failed: ${response.status}`);
   const payload = await response.json();
   return Array.isArray(payload?.embeddings) ? payload.embeddings : [];
 }
 
-async function rerankWithEmbeddings(prompt, ranked, ollamaBaseUrl) {
-  const payloads = ranked.map((entry) => `${entry.title}\n${entry.content}`.slice(0, 1200));
-  const inputs = [prompt, ...payloads];
-
-  let embeddings = [];
+async function rerankWithEmbeddings(query, chunks, ollamaBaseUrl) {
+  if (chunks.length === 0) return chunks;
+  const texts = chunks.map((c) =>
+    `${c.headingPath || c.sectionTitle}\n${c.content}`.slice(0, 1200)
+  );
+  let embeddings;
   try {
-    embeddings = await embedTexts(ollamaBaseUrl, DOC_SEARCH_EMBED_MODEL, inputs);
+    embeddings = await embedTexts(ollamaBaseUrl, DOC_SEARCH_EMBED_MODEL, [
+      query,
+      ...texts,
+    ]);
   } catch {
-    return ranked;
+    return chunks;
   }
-
-  if (!Array.isArray(embeddings) || embeddings.length !== inputs.length) {
-    return ranked;
-  }
-
-  const queryVector = embeddings[0];
-  const reranked = ranked
-    .map((entry, index) => {
-      const semanticScore = cosineSimilarity(queryVector, embeddings[index + 1]);
-      const lexicalScore = Number(entry.lexicalScore || 0);
+  if (!Array.isArray(embeddings) || embeddings.length !== texts.length + 1) return chunks;
+  const queryVec = embeddings[0];
+  return chunks
+    .map((c, i) => {
+      const sem = cosineSimilarity(queryVec, embeddings[i + 1]);
       return {
-        ...entry,
-        semanticScore,
-        finalScore: lexicalScore * 0.45 + semanticScore * 0.55
+        ...c,
+        semanticScore: sem,
+        finalScore: Number(c.lexicalScore || 0) * 0.45 + sem * 0.55,
       };
     })
-    .sort((left, right) => Number(right.finalScore || 0) - Number(left.finalScore || 0));
-
-  return reranked;
+    .sort((a, b) => b.finalScore - a.finalScore);
 }
 
-function trimSnippet(content, size = 280) {
+// Payload helpers
+
+function trimSnippet(content, size) {
+  const limit = size || 280;
   const clean = String(content || "").replace(/\s+/g, " ").trim();
-  if (clean.length <= size) {
-    return clean;
-  }
-  return `${clean.slice(0, size - 3)}...`;
+  if (clean.length <= limit) return clean;
+  return `${clean.slice(0, limit - 3)}...`;
+}
+
+// Nav-artifact fragments that add no value as doc anchors (Docusaurus skeleton labels).
+const NAV_FRAGMENT_RE = /^#(sidebar-label|overview|introduction|table-of-contents|toc)$/i;
+
+function cleanHref(href) {
+  const h = String(href || "").trim();
+  const hashIdx = h.indexOf("#");
+  if (hashIdx === -1) return h;
+  const fragment = h.slice(hashIdx);
+  return NAV_FRAGMENT_RE.test(fragment) ? h.slice(0, hashIdx) : h;
 }
 
 function toDocsPayload(chunks) {
   const seen = new Set();
   const docs = [];
-
-  const ordered = [...(chunks || [])].sort((left, right) => {
-    const leftScore = Number(left.finalScore || left.lexicalScore || 0);
-    const rightScore = Number(right.finalScore || right.lexicalScore || 0);
-    const leftOfficial = left.kind === "official" ? 1 : 0;
-    const rightOfficial = right.kind === "official" ? 1 : 0;
-
-    if (rightOfficial !== leftOfficial) {
-      return rightOfficial - leftOfficial;
-    }
-
-    return rightScore - leftScore;
-  });
-
-  for (const chunk of ordered) {
-    const key = chunk.href;
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
+  for (const chunk of chunks) {
+    const href = cleanHref(chunk.href);
+    if (seen.has(href)) continue;
+    seen.add(href);
     docs.push({
-      title: chunk.sourceTitle || chunk.title,
-      href: chunk.href,
-      kind: chunk.kind || "guide",
-      description: trimSnippet(chunk.content, 190)
+      title: chunk.sectionTitle || chunk.sourceTitle,
+      href,
+      kind: chunk.kind || "official",
+      description: trimSnippet(chunk.content, 190),
     });
-
-    if (docs.length >= DOC_POLICY_MAX_LINKS) {
-      break;
-    }
+    if (docs.length >= 2) break;
   }
-
   return docs;
 }
 
-function toEvidencePayload(chunks) {
-  return (chunks || []).slice(0, DOC_SEARCH_TOP_K).map((chunk) => ({
-    title: chunk.sectionTitle || chunk.sourceTitle || chunk.title,
-    href: chunk.href,
-    kind: chunk.kind || "guide",
-    description: trimSnippet(chunk.content, 220),
-    snippet: trimSnippet(chunk.content, 320),
-    sourceTitle: chunk.sourceTitle || chunk.title,
-    sectionTitle: chunk.sectionTitle || chunk.title,
-    type: chunk.type || "text"
+function toEvidencePayload(chunks, topK) {
+  return chunks.slice(0, topK).map((c) => ({
+    title: c.headingPath || c.sectionTitle || c.sourceTitle,
+    href: c.href,
+    kind: c.kind || "official",
+    description: trimSnippet(c.content, 220),
+    snippet: trimSnippet(c.content, 320),
+    sourceTitle: c.sourceTitle,
+    sectionTitle: c.sectionTitle,
+    headingPath: c.headingPath,
+    type: c.type || "text",
   }));
 }
 
-function resourceScoreForPrompt(prompt, resource, promptTerms) {
-  const title = String(resource?.title || "").toLowerCase();
-  const href = String(resource?.href || "").toLowerCase();
-  const description = String(resource?.description || "").toLowerCase();
-  const joined = `${title} ${href} ${description}`;
-  let score = 0;
+// Public exports
 
-  if (resource?.kind === "official") {
-    score += 0.5;
-  }
-
-  for (const term of promptTerms || []) {
-    if (joined.includes(term)) {
-      score += 1;
-    }
-  }
-
-  return score;
-}
-
-function backfillDocs(docs, resources, prompt, maxResults = 4) {
-  const promptTerms = extractPromptTerms(prompt);
-  const existing = new Set((docs || []).map((item) => item.href));
-  const output = [...(docs || [])];
-  const rankedResources = uniqueByHref(resources || [])
-    .map((resource) => ({ resource, score: resourceScoreForPrompt(prompt, resource, promptTerms) }))
-    .sort((left, right) => right.score - left.score)
-    .map((entry) => entry.resource);
-
-  for (const resource of rankedResources) {
-    if (output.length >= maxResults) {
-      break;
-    }
-    if (existing.has(resource.href)) {
-      continue;
-    }
-
-    existing.add(resource.href);
-    output.push({
-      title: resource.title,
-      href: resource.href,
-      kind: resource.kind || "guide",
-      description: resource.description || "Related official guidance."
-    });
-  }
-
-  return output.slice(0, maxResults);
-}
-
-function filterDocsByPromptRelevance(prompt, docs, maxResults = DOC_SEARCH_MAX_DOCS) {
-  const promptTerms = extractPromptTerms(prompt);
-  if (promptTerms.length === 0) {
-    return [];
-  }
-
-  const scored = (docs || [])
-    .map((doc) => {
-      const score = resourceScoreForPrompt(prompt, doc, promptTerms);
-      return { doc, score };
-    })
-    .sort((left, right) => right.score - left.score);
-
-  const bestScore = Number(scored[0]?.score || 0);
-  if (bestScore < DOC_SEARCH_MIN_DOC_SCORE) {
-    return [];
-  }
-
-  const floor = Math.max(DOC_SEARCH_MIN_DOC_SCORE, bestScore * 0.5);
-  return scored
-    .filter((entry) => entry.score >= floor)
-    .slice(0, maxResults)
-    .map((entry) => entry.doc);
-}
-
+// Format top-K retrieved chunks as a grounding block for the LLM system prompt.
+// Includes heading path so the model understands the section's position in the
+// doc hierarchy and can cite precisely (e.g. href#jwt-role-configuration).
 export function buildDocSearchPromptSupplement(searchResult) {
   const chunks = Array.isArray(searchResult?.chunks) ? searchResult.chunks : [];
-  if (chunks.length === 0) {
-    return "";
-  }
+  if (chunks.length === 0) return "";
 
   const lines = [
-    "Retrieved documentation excerpts (static guidance, not runtime truth). When useful, answer with HAL commands first and then include one direct doc section link from this evidence:"
+    "Retrieved documentation excerpts (static guidance, not runtime truth).",
+    "Answer with HAL commands first. For each statement grounded here, cite the deepest section link available:",
   ];
 
   for (const chunk of chunks.slice(0, DOC_SEARCH_TOP_K)) {
-    lines.push(`- Source: ${chunk.sourceTitle || chunk.title}${chunk.sectionTitle ? ` · ${chunk.sectionTitle}` : ""} (${chunk.href})`);
+    const location = chunk.headingPath || chunk.sectionTitle || chunk.sourceTitle;
+    lines.push(`\n- Source: ${chunk.sourceTitle} | ${location}`);
+    lines.push(`  Link: ${chunk.href}`);
     if (chunk.type === "code") {
       lines.push(`  Code (${chunk.language || "text"}):`);
       lines.push("  ```");
@@ -1019,40 +778,97 @@ export function buildDocSearchPromptSupplement(searchResult) {
   return lines.join("\n");
 }
 
-export async function retrieveDocsForPrompt(prompt, context, options = {}) {
+// Main retrieval entry point called from /api/chat and /api/docs.
+//   options.messages        -- full conversation message array for richer query context
+//   options.ollamaBaseUrl   -- Ollama base URL for embedding rerank
+//   options.pinnedBaseUrls  -- base page URLs that must be represented in results
+//                              (e.g. behavior resource pages). Injects best chunk from
+//                              each pinned page if not already in top-K results.
+export async function retrieveDocsForPrompt(prompt, context, options) {
+  const opts = options || {};
   if (!DOC_SEARCH_ENABLED) {
     return { docs: [], chunks: [], mode: "disabled" };
   }
 
-  const selectedResources = selectProductResources(context, prompt);
-  const resources = await expandResourcesWithDiscoveredSubpages(selectedResources, prompt, context);
-  if (!prompt || resources.length === 0) {
-    return { docs: [], chunks: [], mode: DOC_SEARCH_MODE };
+  const productId = contextProductId(context);
+  if (!productId || !PRODUCT_TREE[productId]) {
+    return { docs: [], chunks: [], mode: "no-product" };
   }
 
-  const allChunks = [];
-  for (const resource of resources) {
-    const resourceChunks = await getResourceChunks(resource);
-    allChunks.push(...resourceChunks);
+  if (!prompt) {
+    return { docs: [], chunks: [], mode: "no-prompt" };
   }
 
-  if (allChunks.length === 0) {
-    return { docs: [], chunks: [], mode: DOC_SEARCH_MODE };
+  await ensureCorpus(productId);
+
+  const state = corpusState.get(productId);
+  if (!state) {
+    return { docs: [], chunks: [], mode: "corpus-unavailable" };
   }
 
-  const lexical = lexicalRank(prompt, allChunks, DOC_SEARCH_TOP_N);
+  const query = buildSearchQuery(opts.messages, prompt);
+
+  const lexical = searchCorpus(productId, query, DOC_SEARCH_TOP_N);
   if (lexical.length === 0) {
-    return { docs: [], chunks: [], mode: DOC_SEARCH_MODE };
+    return { docs: [], chunks: [], mode: "no-match" };
   }
 
   const mode = DOC_SEARCH_MODE === "hybrid" ? "hybrid" : "lexical";
   const reranked =
-    mode === "hybrid" ? await rerankWithEmbeddings(prompt, lexical, options.ollamaBaseUrl || "http://127.0.0.1:11434") : lexical;
+    mode === "hybrid"
+      ? await rerankWithEmbeddings(
+          query,
+          lexical,
+          opts.ollamaBaseUrl || "http://127.0.0.1:11434"
+        )
+      : lexical;
+
   const topChunks = reranked.slice(0, DOC_SEARCH_TOP_K);
-  const docCandidates = backfillDocs(toDocsPayload(topChunks), resources, prompt, 16);
-  const relevantDocs = filterDocsByPromptRelevance(prompt, docCandidates, DOC_POLICY_MAX_LINKS);
-  const docs = applyDocPolicy(prompt, context, relevantDocs);
-  const evidence = toEvidencePayload(topChunks);
+
+  // Inject best-scoring chunk from each pinned base URL not already in topChunks.
+  // Checks reranked candidates first; falls back to a full corpus scan.
+  const pinnedBaseUrls = Array.isArray(opts.pinnedBaseUrls) ? opts.pinnedBaseUrls : [];
+  if (pinnedBaseUrls.length > 0 && state.chunkMap) {
+    const representedBases = new Set(
+      topChunks.map((c) => String(c.href || "").split("#")[0])
+    );
+    for (const baseUrl of pinnedBaseUrls) {
+      if (representedBases.has(baseUrl)) continue;
+      // Best chunk already scored by rerank but outside top-K
+      const fromReranked = reranked.find(
+        (c) => String(c.href || "").split("#")[0] === baseUrl
+      );
+      if (fromReranked) {
+        topChunks.push(fromReranked);
+        representedBases.add(baseUrl);
+        continue;
+      }
+      // Not in BM25 top-N at all — fall back to first corpus chunk for that page
+      for (const chunk of state.chunkMap.values()) {
+        if (String(chunk.href || "").split("#")[0] === baseUrl) {
+          topChunks.push(chunk);
+          representedBases.add(baseUrl);
+          break;
+        }
+      }
+    }
+  }
+
+  // Float pinned-base chunks to the front in pinnedBaseUrls order (behavior resource priority),
+  // not BM25 score order. This ensures the first/most-specific resource page always leads.
+  const pinnedSet = new Set(pinnedBaseUrls);
+  const sortedForDocs = pinnedSet.size > 0
+    ? [
+        ...pinnedBaseUrls.flatMap((base) =>
+          topChunks.filter((c) => String(c.href || "").split("#")[0] === base)
+        ),
+        ...topChunks.filter((c) => !pinnedSet.has(String(c.href || "").split("#")[0])),
+      ]
+    : topChunks;
+
+  const docs = toDocsPayload(sortedForDocs);
+  // Evidence uses sortedForDocs so pinned chunks (floated to front) are visible to buildKnowledgeAnswer.
+  const evidence = toEvidencePayload(sortedForDocs, DOC_SEARCH_TOP_K);
 
   return {
     docs,
@@ -1060,10 +876,10 @@ export async function retrieveDocsForPrompt(prompt, context, options = {}) {
     chunks: topChunks,
     mode,
     debug: {
-      resources: resources.length,
-      chunks: allChunks.length,
+      product: productId,
+      corpusChunks: state.chunkMap.size,
       considered: lexical.length,
-      docPolicyApplied: true
-    }
+      queryPreview: query.slice(0, 120),
+    },
   };
 }

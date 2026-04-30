@@ -34,7 +34,7 @@ UX contract
 - While an assistant response is streaming, use short progressive activity wording ending in "-ing" (for example, thinking, analyzing, processing) rather than static grounding-only phrasing.
 - The chat message area should auto-follow streamed output to the latest chunk so users do not need to manually scroll during long answers.
 - User-facing answers must stay concise by default. Include endpoints, lab surfaces, or extra links only when the user explicitly asks for them.
-- Documentation links in answers should follow the lightweight URL policy layer: intent-aware mapping first, then relevance-ranked fallback. Keep at most two links per answer.
+- Documentation links in answers come from the pre-built corpus (BM25 + embedding rerank, MCP-independent). Links are section-level (`href#anchor`) when available. Keep at most two links per answer.
 
 Response contract — intent routes
 HAL Plus uses three distinct answer routes. Route selection happens before any output is built.

@@ -59,7 +59,7 @@ export function isStatusQuestion(prompt) {
 
 // Route A — knowledge/factual intent: user is asking a conceptual or prerequisite question.
 // These must NOT produce a command dump. See llm/ANSWER_QUALITY.md Route A.
-function isKnowledgeQuestion(prompt) {
+export function isKnowledgeQuestion(prompt) {
   const lower = String(prompt || "").toLowerCase();
   const knowledgePhrases = [
     "does ",
@@ -91,6 +91,11 @@ function isKnowledgeQuestion(prompt) {
     "how do i access",
     "how do i open",
     "how do i reach",
+    // How-is / How-does conceptual questions (not "how to" which is operational)
+    "how is ",
+    "how does ",
+    // How-do-I read/view/inspect questions (operational override covers enable/configure/deploy)
+    "how do i ",
     // Aspirational / conceptual intent
     "i want to understand",
     "i want to know",
@@ -629,8 +634,36 @@ function buildKnowledgeAnswer(prompt, behavior, product, grounding, docSearch) {
   }
   const prose = proseParts.join(" ");
 
-  // One key command: first actionCommand that looks like a license export or primary create.
+  // One key command: prefer verifyCommands for read/inspect questions,
+  // license-export commands when present, otherwise first actionCommand.
+  // Strip punctuation from prompt before matching so "vault read" (with quotes) still hits.
+  const cleanPrompt = lowerPrompt.replace(/["""''`]/g, " ");
+  const isReadIntent = ["read ", "inspect", "get the", "view ", "show the", "check the", "what command", "what is the command", "what's the command"].some((p) => cleanPrompt.includes(p));
   const licenseExport = (behavior.actionCommands || []).find((c) => c.toLowerCase().includes("export"));
+
+  // For read-intent: show the HAL status command (MCP answer) + raw read CLI command + doc excerpt.
+  if (isReadIntent) {
+    const halCmd = (behavior.verifyCommands || []).find((c) => c.startsWith("hal ")) || null;
+    const rawReadCmd = (behavior.verifyCommands || []).find((c) => c.toLowerCase().includes("read") || c.toLowerCase().includes("list")) || null;
+    const cmds = [halCmd, rawReadCmd].filter(Boolean);
+    const docChunk = Array.isArray(docSearch?.evidence) && docSearch.evidence[0] ? docSearch.evidence[0] : null;
+    const docHref = docChunk?.href || (Array.isArray(docSearch?.docs) && docSearch.docs[0]?.href) || (behavior.resources || []).find((r) => r.kind === "official")?.href || null;
+    const docExcerpt = docChunk?.snippet || docChunk?.description || null;
+    const lines = [];
+    if (cmds.length > 0) {
+      lines.push("```bash", ...cmds, "```", "");
+    }
+    if (docExcerpt) {
+      // Strip HTML entities for display
+      const clean = String(docExcerpt).replace(/&#x27;/g, "'").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").slice(0, 280);
+      lines.push(`> ${clean}`, "");
+    }
+    if (docHref) {
+      lines.push(`Docs: ${docHref}`);
+    }
+    return lines.join("\n");
+  }
+
   const keyCommand = licenseExport || (behavior.actionCommands || [])[0] || null;
 
   // One doc: prefer docSearch result, then first official resource.
@@ -737,12 +770,41 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
     .sort((left, right) => right.score - left.score)
     .map((entry) => entry.resource);
 
+  // docSearch section-level links (href#anchor) indexed by their base page URL for quick lookup.
+  const docSearchByBase = new Map();
+  if (Array.isArray(docSearch?.docs)) {
+    for (const doc of docSearch.docs) {
+      const href = String(doc?.href || "").trim();
+      if (!href) continue;
+      const base = href.split("#")[0];
+      if (!docSearchByBase.has(base)) {
+        docSearchByBase.set(base, doc);
+      }
+    }
+  }
+
+  // Upgrade a behavior resource to a section-level link when docSearch found a fragment
+  // match on the same page. This means behavior resources remain authoritative for
+  // which pages to show, while docSearch provides the deeper anchor when available.
+  // Nav-artifact fragments (e.g. #sidebar-label) are not treated as upgrades.
+  const NAV_FRAGMENT_RE = /^#(sidebar-label|overview|introduction|table-of-contents|toc)$/i;
+  function upgradeToSectionLink(resource) {
+    const base = String(resource?.href || "").split("#")[0];
+    const deeper = docSearchByBase.get(base);
+    if (deeper && deeper.href.includes("#")) {
+      const fragment = "#" + deeper.href.split("#")[1];
+      if (NAV_FRAGMENT_RE.test(fragment)) return resource;
+      return { ...resource, href: deeper.href };
+    }
+    return resource;
+  }
+
   const officialDocs = (() => {
     // Behavior resources are authoritative for the matched product/subcommand.
     // Only fall back to docSearch when the behavior has no official resources at all.
     if (officialCandidates.length > 0) {
       if (!monitoringIntent) {
-        return officialCandidates.slice(0, 2);
+        return officialCandidates.slice(0, 2).map(upgradeToSectionLink);
       }
       const monitoringDocs = officialCandidates.filter((resource) => isMonitoringResource(resource));
       const docs = monitoringDocs.length > 0 ? [monitoringDocs[0]] : [];
@@ -755,7 +817,7 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
           break;
         }
       }
-      return docs.slice(0, 2);
+      return docs.slice(0, 2).map(upgradeToSectionLink);
     }
     // Fallback: docSearch when behavior has no official resources.
     return Array.isArray(docSearch?.docs)
