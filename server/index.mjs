@@ -17,8 +17,8 @@ import {
 import { createHalExecutableResolver } from "./hal-exec.mjs";
 import { createHalMcpClient } from "./hal-mcp-client.mjs";
 import { createPolicyEngine } from "./policy-engine.mjs";
-import { deterministicIntentResponse, isCodeIntent, isFollowUpPrompt, isStatusQuestion } from "./deterministic-engine.mjs";
-import { buildDocSearchPromptSupplement, retrieveDocsForPrompt } from "./doc-search.mjs";
+import { deterministicIntentResponse, isCodeIntent, isFollowUpPrompt, isKnowledgeQuestion, isStatusQuestion } from "./deterministic-engine.mjs";
+import { buildDocSearchPromptSupplement, retrieveDocsForPrompt, initCorpus } from "./doc-search.mjs";
 import { baselineProductsToUi, getOllamaRuntime, lokiStateFromBaseline } from "./runtime-status.mjs";
 import { streamSSESections, streamSSEText, proxyOllamaStreamToSSE } from "./sse.mjs";
 
@@ -374,8 +374,17 @@ async function rankDocsForPrompt(prompt, context) {
   }
 }
 
-async function docsForPromptWithFallback(prompt, context) {
-  const search = await retrieveDocsForPrompt(prompt, context, { ollamaBaseUrl: OLLAMA_BASE_URL });
+async function docsForPromptWithFallback(prompt, context, messages) {
+  const behavior = context?.primary || context?.product;
+  const pinnedBaseUrls = (behavior?.resources || [])
+    .filter((r) => r.kind === "official" && typeof r.href === "string")
+    .map((r) => r.href.split("#")[0])
+    .filter(Boolean);
+  const search = await retrieveDocsForPrompt(prompt, context, {
+    ollamaBaseUrl: OLLAMA_BASE_URL,
+    messages: messages || [],
+    pinnedBaseUrls,
+  });
   if (Array.isArray(search.docs) && search.docs.length > 0) {
     return search;
   }
@@ -512,7 +521,7 @@ app.post("/api/chat", async (req, res) => {
     const [runtimePolicy, runtimeCatalog, docSearch] = await Promise.all([
       getRuntimePolicy(),
       halMcpClient.getRuntimeCatalog().catch(() => null),
-      docsForPromptWithFallback(prompt, behaviorContext).catch(() => ({ docs: [], chunks: [], mode: "error" }))
+      docsForPromptWithFallback(prompt, behaviorContext, inputMessages).catch(() => ({ docs: [], chunks: [], mode: "error" }))
     ]);
     const behaviorCoverage = evaluateBehaviorMcpCoverage(behaviorContext, runtimeCatalog, runtimePolicy);
     const [behaviorGrounding, probeProducts] = await Promise.all([
@@ -543,9 +552,9 @@ app.post("/api/chat", async (req, res) => {
 
     const deterministicReply = await deterministicIntentResponse(prompt, behaviorContext, behaviorGrounding, behaviorCoverage, docSearch, probeProducts);
     if (deterministicReply) {
-      // Skip Qwen wrapping for status/health checks — they need to be instant.
-      // Only operational answers (configure/deploy/enable) benefit from prose context.
-      if (isStatusQuestion(prompt)) {
+      // Route A (knowledge/factual) and status checks stream directly — no Qwen wrapping.
+      // Qwen would rewrite the carefully selected verify command back to the action command.
+      if (isStatusQuestion(prompt) || isKnowledgeQuestion(prompt)) {
         await streamSSESections(res, deterministicReply, { delayMs: 80 });
         return;
       }
@@ -699,6 +708,10 @@ if (fs.existsSync(distDir)) {
     res.sendFile(path.join(distDir, "index.html"));
   });
 }
+
+// Kick off background corpus builds before the server is ready to serve traffic.
+// Loads any fresh on-disk corpus into memory immediately; stale ones rebuild async.
+initCorpus();
 
 app.listen(PORT, HOST, () => {
   console.log(`HAL Plus API running on http://${HOST}:${PORT}`);
