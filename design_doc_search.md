@@ -55,8 +55,8 @@ Modes:
 
 ## Product tree
 Defined in `PRODUCT_TREE` constant in `doc-search.mjs`. Currently:
-- **terraform**: roots at `/terraform/enterprise` + `/terraform/cloud-docs`, depth 2, max 80 pages
-- **vault**: roots at `/vault/docs` + `/vault/tutorials`, depth 2, max 80 pages
+- **terraform**: roots at `/terraform/enterprise` + `/terraform/cloud-docs`, depth 2, max 300 pages
+- **vault**: roots at `/vault/docs` + `/vault/tutorials`, depth 2, max 300 pages
 
 To add a product (e.g. Nomad, Consul, Boundary): add an entry to `PRODUCT_TREE`. No other changes needed.
 
@@ -90,7 +90,7 @@ To add a product (e.g. Nomad, Consul, Boundary): add an entry to `PRODUCT_TREE`.
 | `HAL_DOC_SEARCH_CORPUS_TTL_MS` | `86400000` | Corpus rebuild interval (24h) |
 | `HAL_DOC_SEARCH_FETCH_TTL_MS` | `43200000` | Per-page HTML cache TTL (12h) |
 | `HAL_DOC_SEARCH_CRAWL_DEPTH` | `2` | Crawl depth from product roots |
-| `HAL_DOC_SEARCH_MAX_PAGES` | `80` | Max pages crawled per product |
+| `HAL_DOC_SEARCH_MAX_PAGES` | `300` | Max pages crawled per product |
 - HAL_DOC_SEARCH_TOP_N=20
 - HAL_DOC_SEARCH_TOP_K=6
 - HAL_DOC_SEARCH_EMBED_MODEL=nomic-embed-text

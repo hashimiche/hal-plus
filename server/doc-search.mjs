@@ -40,7 +40,7 @@ const DOC_SEARCH_FETCH_TTL_MS = Number(
   process.env.HAL_DOC_SEARCH_FETCH_TTL_MS || 12 * 60 * 60 * 1000
 );
 const DOC_SEARCH_CRAWL_DEPTH = Number(process.env.HAL_DOC_SEARCH_CRAWL_DEPTH || 2);
-const DOC_SEARCH_MAX_PAGES = Number(process.env.HAL_DOC_SEARCH_MAX_PAGES || 80);
+const DOC_SEARCH_MAX_PAGES = Number(process.env.HAL_DOC_SEARCH_MAX_PAGES || 300);
 const DOC_SEARCH_CORPUS_VERSION = "3";
 
 const DOC_ALLOWED_HOSTS = new Set([
