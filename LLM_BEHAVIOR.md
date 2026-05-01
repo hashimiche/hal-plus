@@ -73,7 +73,7 @@ Deterministic routing policy
 - Never invent commands or endpoints.
 - Preferred tone: deterministic MCP-first answer quality is primary; model reasoning is a concise supplement, not a replacement.
 - **Command isolation**: behavior-file `actionCommands` always appear before MCP-grounded suggestions. For subcommand-specific behaviors (e.g. `vault_k8s`, subcommand `k8s`), MCP plan/skill commands are filtered to only those that include the subcommand name — this prevents sibling-subcommand pollution (e.g. `hal vault audit` or `hal obs create` appearing in a `vault k8s` enable flow).
-- The `planIntent` field in a behavior spec is passed as-is to the MCP plan tool; the raw user prompt is only used as a fallback when `planIntent` is absent.
+- The `planIntent` field in a behavior spec describes the intended deployment flow; it is used by the deterministic engine as a hint to populate grounded action commands from behavior-file `actionCommands`. The MCP layer provides only status evidence; planning is handled by HAL Plus behavior files.
 
 Mandatory guardrails
 - Prefer HAL commands before raw commands when possible.
