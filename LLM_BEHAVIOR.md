@@ -107,7 +107,7 @@ Runtime stack (container mode)
 Product status / health probes
 - When `hal_status_baseline` is unavailable (engine socket not mounted), HAL Plus probes each product health endpoint directly.
 - Each product is probed at both its container-network hostname (`hal-vault`, `hal-consul`, etc.) **and** `127.0.0.1`, so the same logic works for `npm run dev` on the host and for container-mode deployments.
-- Health endpoints used: Vault `/v1/sys/health`, Consul `/v1/status/leader`, Boundary `/v1/health`, Nomad `/v1/agent/health`, TFE `/_health_check`, Grafana `/api/health`, Prometheus `/-/healthy`, Loki `/ready`.
+- Health endpoints used: Vault `/v1/sys/health`, Consul `/v1/status/leader`, Boundary `/v1/health`, Nomad `/v1/agent/health`, TFE `/api/v1/health/readiness`, Grafana `/api/health`, Prometheus `/-/healthy`, Loki `/ready`.
 - Grafana, Prometheus, and Loki are grouped into a single `Observability` product row with per-component feature flags.
 - Nomad is probed at port 4646 via the same dual-candidate pattern; `multipass://` is no longer used as a fallback.
 - Any HTTP response (including Vault standby/sealed codes 429/472/473/503) counts as the service being reachable.

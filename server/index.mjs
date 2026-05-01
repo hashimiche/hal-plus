@@ -162,7 +162,7 @@ const PRODUCT_PROBES = [
     containerHost: "hal-tfe",
     localhostHost: "127.0.0.1",
     port: 8443,
-    healthPath: "/_health_check",
+    healthPath: "/api/v1/health/readiness",
     scheme: "https",
     uiEndpoint: "https://tfe.localhost:8443"
   },

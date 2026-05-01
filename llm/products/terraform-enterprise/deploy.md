@@ -56,7 +56,7 @@
   ],
   "verifyCommands": [
     "hal terraform status",
-    "curl -k -I https://tfe.localhost:8443/_health_check",
+    "curl -k -I https://tfe.localhost:8443/api/v1/health/readiness",
     "curl -k -I https://tfe.localhost:8443/app"
   ],
   "resources": [
@@ -118,7 +118,7 @@
   ],
   "notes": [
     "User-facing URL remains https://tfe.localhost:8443 behind hal-tfe-proxy.",
-    "HAL validates both _health_check and /app style access so redirect loops are caught early.",
+    "HAL validates /api/v1/health/readiness (TFE 1.2+) to confirm startup before handing control back to the user.",
     "The deploy path patches in-container trust and task-worker cache behavior so remote runs keep working locally.",
     "After deploy, tell the user to accept the browser warning for the self-signed certificate.",
     "Admin defaults are haladmin / hal9000FTW unless the operator overrides flags.",
@@ -160,7 +160,7 @@ hal capacity
 hal terraform status
 
 # Direct health check against the proxied HTTPS endpoint
-curl -k -I https://tfe.localhost:8443/_health_check
+curl -k -I https://tfe.localhost:8443/api/v1/health/readiness
 # Expect: HTTP/2 200
 
 # Confirm app redirect works (catches proxy misconfiguration)

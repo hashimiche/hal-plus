@@ -77,7 +77,7 @@ Primary source: `hal-status` sidecar container exposes `http://hal-status:9001/a
 
 Fallback (dev / no containers): direct HTTP probes per product at both container hostname and `127.0.0.1`:
 - Vault `/v1/sys/health`, Consul `/v1/status/leader`, Boundary `/v1/health`
-- Nomad `/v1/agent/health` (port 4646), TFE `/_health_check`
+- Nomad `/v1/agent/health` (port 4646), TFE `/api/v1/health/readiness`
 - Grafana `/api/health`, Prometheus `/-/healthy`, Loki `/ready`
 
 Any HTTP response (including Vault sealed/standby codes) counts as reachable.
