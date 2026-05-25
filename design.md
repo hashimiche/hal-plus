@@ -73,7 +73,7 @@ The `hal-mcp` container does NOT mount the host engine socket. Tool calls that n
 
 ## Product Status / Health
 
-Primary source: `hal-status` sidecar container exposes `http://hal-status:9001/api/status` (snapshot built on host by HAL CLI and injected as env var at container start).
+Primary source: `hal-health` sidecar container exposes `http://hal-health:9001/api/status` (snapshot built on host by HAL CLI and injected as env var at container start).
 
 Fallback (dev / no containers): direct HTTP probes per product at both container hostname and `127.0.0.1`:
 - Vault `/v1/sys/health`, Consul `/v1/status/leader`, Boundary `/v1/health`
