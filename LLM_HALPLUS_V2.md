@@ -16,6 +16,42 @@
 
 ---
 
+## 0. ⏸️ RESUME HERE (checkpoint — 2026-05-29)
+
+**Branch:** `feature/halplus-v2` on **both** repos. Everything below is **committed + pushed**:
+- hal `c652513` — `mcp: add get_tfe_vcs_workflow_status structured tool`
+- hal-plus `acefd43` — `scenario: wire scenario route, per-component citations, vcs grounding`
+
+**Done so far (milestone 1 of the scenario track):**
+1. Scenario layer scaffolded — `llm/scenarios/capabilities.json` (6 nodes), `shapes/*.md` (3 shapes:
+   `vcs-driven-workflow`, `cli-driven-workflow`, `dynamic-secrets`), `server/scenario-registry.mjs`.
+2. **Scenario route (Route S)** wired into `server/index.mjs` `/api/chat` — fires only when
+   `resolveScenarioContext` returns BOTH a shape AND a primary capability; gathers live MCP facts +
+   doc-search context, streams a grounded multi-section walkthrough from Ollama. See §10.8.
+3. Per-component inline citations + strict anti-placeholder grounding rule across all 3 shapes (§ "answer quality").
+4. Default model → `gemma4:latest` (`OLLAMA_MODEL` override; local tags `gemma4:latest` 9.6GB, `gemma4:26b-mlx` 16GB).
+5. **hal MCP tool `get_tfe_vcs_workflow_status` implemented** (read-only, structured) — §9.4 is now
+   IMPLEMENTED, not a proposal. Returns gitlab/tfe endpoints, runs_url, lab_credentials, ready.
+
+**Next actions (pick up here):**
+- [ ] **Live UI test** the VCS-workflow prompt end-to-end now that the MCP tool returns real facts
+      (start hal-plus dev server + a TFE/GitLab lab; confirm Route S fires and grounding renders without
+      placeholder links). This is the immediate next step.
+- [ ] Decide on **milestone 2 = Qdrant + source diversity** (docs/tutorials/VDD/VP/YouTube) — the
+      "Learn more" / under-the-hood citations stay thin until the corpus broadens (see §4.A).
+- [ ] Optional MCP follow-ups deferred in v1: `vcs_linked`/`oauth_client` (needs a TFE API call) and
+      twin-target support (currently degrades gracefully). See §9.4.
+
+**Notes for a fresh model picking this up:**
+- Read order at session start: this file → `LLM_BEHAVIOR.md` → `UX_PARITY.md` → `design.md` →
+  `design_doc_search.md`; and on the hal side `hal/LLM_CONTEXT.md` + `hal/.github/copilot-instructions.md`.
+- hal rules: every hal change on a named branch; **never commit without explicit user approval**; when
+  MCP behavior/schema changes, update `LLM_CONTEXT.md` (and `HAL_MCP_CONTRACT.json`/`docs/commands/mcp*.md`
+  /`testdata/*_help_snapshot.json` *if* they enumerate the change — they currently don't for tool adds).
+- Detailed running log lives in session memory `/memories/session/hal-plus-ai-rethink.md`.
+
+---
+
 ## 1. The Vision (what "good" looks like)
 
 HAL Plus is the **educational AI interface** for HAL — a CLI that creates local HashiCorp setups
