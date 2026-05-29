@@ -11,7 +11,7 @@ Ownership split
 - LLM-facing documentation discipline: when AI behavior, prompts, routing, skills, docs policy, or UX guidance changes, update the relevant LLM markdown surfaces in both repos in the same work cycle.
 - Minimum required LLM markdown sync surfaces are:
   - `hal`: `.github/copilot-instructions.md`, `.github/copilot/skills/**/*.md`, `docs/**/*.md`, `LLM_CONTEXT.md`
-  - `hal-plus`: `llm/**/*.md`, `design*.md`, `UX_PARITY.md`, `LLM_BEHAVIOR.md`
+  - `hal-plus`: `llm/**/*.md`, `design*.md`, `UX_PARITY.md`, `LLM_BEHAVIOR.md`, `LLM_HALPLUS_V2.md`
 - Branch discipline: before making code changes in either repo, ask the user to create or confirm a working branch first. After the branch exists, keep code and LLM markdown updates aligned on that branch.
 - Behavior packs in HAL Plus may keep stable product knowledge, but runtime or version-sensitive claims must prefer HAL MCP.
 - If HAL MCP is unavailable, HAL Plus may still answer with stable product logic, but it must mark live runtime facts as unknown and show the HAL/MCP checks needed to confirm them.

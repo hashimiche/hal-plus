@@ -1,0 +1,132 @@
+{
+  "$schema": "Capability graph for hal-plus scenario generation. See LLM_HALPLUS_V2.md §10.2.",
+  "version": 1,
+  "capabilities": [
+    {
+      "id": "tfe",
+      "kind": "product",
+      "label": "Terraform Enterprise",
+      "product": "terraform",
+      "behaviorId": "terraform_enterprise",
+      "provides": "A self-hosted Terraform Enterprise runtime (org/project/workspaces, remote runs).",
+      "dependsOn": [],
+      "action": "hal terraform create",
+      "statusTool": "get_tfe_status",
+      "manualTrigger": null,
+      "observable": {
+        "what": "The TFE web UI is reachable and the bootstrap org/project exist.",
+        "linkFrom": "tfe.workspace_url"
+      },
+      "access": {
+        "surfaces": ["tfe.workspace_url"],
+        "credentials": ["lab_credentials.tfe_admin"]
+      },
+      "sourceTags": { "product": "terraform", "feature": "enterprise" },
+      "notes": "Primary target = container hal-tfe at https://tfe.localhost:8443, org hal, project Dave."
+    },
+    {
+      "id": "gitlab",
+      "kind": "integration",
+      "label": "GitLab CE (lab VCS host)",
+      "product": "terraform",
+      "behaviorId": null,
+      "provides": "A local GitLab CE instance hosting the demo repo that TFE links to via VCS.",
+      "dependsOn": [],
+      "action": "hal terraform vcs-workflow enable",
+      "statusTool": "get_tfe_vcs_workflow_status",
+      "manualTrigger": null,
+      "observable": {
+        "what": "The GitLab project (root/tfe-agent-demo) is reachable with main.tf + .gitlab-ci.yml seeded.",
+        "linkFrom": "gitlab.web_url"
+      },
+      "access": {
+        "surfaces": ["gitlab.web_url"],
+        "credentials": ["lab_credentials.gitlab"]
+      },
+      "sourceTags": { "product": "terraform", "feature": "vcs-workflow" },
+      "notes": "Bootstrapped as a side effect of the vcs-workflow command; not a standalone hal product. GitLab CE 18.10.1 at http://127.0.0.1:8080, login root / hal9000FTW."
+    },
+    {
+      "id": "tfe_vcs_workflow",
+      "kind": "feature",
+      "label": "Terraform VCS-driven workflow",
+      "product": "terraform",
+      "behaviorId": "terraform_workspace",
+      "provides": "VCS-driven auto-apply of Terraform runs: a commit to the GitLab repo triggers a TFE run.",
+      "dependsOn": ["tfe", "gitlab"],
+      "action": "hal terraform vcs-workflow enable",
+      "statusTool": "get_tfe_vcs_workflow_status",
+      "manualTrigger": "Push a commit to the main branch of the GitLab repo (root/tfe-agent-demo).",
+      "observable": {
+        "what": "GitLab fires a webhook to TFE, which queues and auto-applies a run; the latest run appears at the top of the workspace runs page.",
+        "linkFrom": "tfe.runs_url"
+      },
+      "access": {
+        "surfaces": ["gitlab.web_url", "tfe.workspace_url"],
+        "credentials": ["lab_credentials.gitlab", "lab_credentials.tfe_admin"]
+      },
+      "sourceTags": { "product": "terraform", "feature": "vcs-workflow" },
+      "notes": "Workspace auto-apply + execution-mode remote + queue-all-runs + vcs-repo linked on branch main. Twin target uses -bis names. See LLM_HALPLUS_V2.md §9."
+    },
+    {
+      "id": "tfe_api_workflow",
+      "kind": "feature",
+      "label": "Terraform API/CLI-driven workflow",
+      "product": "terraform",
+      "behaviorId": "terraform_cli",
+      "provides": "An ephemeral TFX API helper shell to drive TFE runs via the API/CLI instead of a VCS repo.",
+      "dependsOn": ["tfe"],
+      "action": "hal terraform api-workflow enable",
+      "statusTool": "get_tfe_api_workflow_status",
+      "manualTrigger": "From the helper shell, drive workspaces and queue runs with tfx / the TFE API.",
+      "observable": {
+        "what": "Runs appear in the TFE workspace, queued via the API/CLI rather than a VCS webhook.",
+        "linkFrom": null
+      },
+      "access": {
+        "surfaces": ["tfe.workspace_url"],
+        "credentials": ["lab_credentials.tfe_admin"]
+      },
+      "sourceTags": { "product": "terraform", "feature": "api-workflow" },
+      "notes": "Builds/runs the ephemeral helper container hal-tfe-api (image hal-tfe-api:latest, base ghcr.io/straubt1/tfx:latest) and drops into a shell. Alias: api. statusTool shares its handler with get_tfe_cli_status and returns TEXT status (no structured payload) -> observable.linkFrom is null; the tfe.* dotted paths in access come from the dependsOn tfe node's get_tfe_status."
+    },
+    {
+      "id": "vault",
+      "kind": "product",
+      "label": "HashiCorp Vault",
+      "product": "vault",
+      "behaviorId": "vault_product",
+      "provides": "A running Vault instance (secrets engines, auth methods, policies).",
+      "dependsOn": [],
+      "action": "hal vault create",
+      "statusTool": "get_vault_status",
+      "manualTrigger": null,
+      "observable": {
+        "what": "The Vault API is reachable and unsealed.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "vault", "feature": "core" },
+      "notes": "Container hal-vault; root token surfaced by the CLI. statusTool returns TEXT status (not a structured payload), so no dotted-path linkFrom."
+    },
+    {
+      "id": "vault_database",
+      "kind": "feature",
+      "label": "Vault dynamic database credentials",
+      "product": "vault",
+      "behaviorId": "vault_database",
+      "provides": "On-demand, short-lived database credentials minted by Vault (no static DB passwords).",
+      "dependsOn": ["vault"],
+      "action": "hal vault database enable",
+      "statusTool": "get_vault_database_status",
+      "manualTrigger": "Request a credential: vault read database/creds/dba-role",
+      "observable": {
+        "what": "Vault mints a just-in-time MariaDB username/password with a 2m default TTL (max 2h) that auto-revokes when the lease expires.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "vault", "feature": "database-secrets" },
+      "notes": "MariaDB container hal-vault-mariadb at mariadb.localhost:3306. Vault mounts database/ (mysql-database-plugin), rotates the vaultadmin root password, role dba-role default_ttl 2m / max_ttl 2h, revocation DROP USER. statusTool returns TEXT status (no structured payload)."
+    }
+  ]
+}
