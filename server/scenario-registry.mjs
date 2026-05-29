@@ -212,3 +212,99 @@ export function listRequiredStatusTools(context) {
   }
   return tools;
 }
+
+/**
+ * Ordered, de-duplicated list of hal provision commands for the resolved
+ * capability subgraph (consecutive duplicates collapsed — e.g. gitlab and
+ * tfe_vcs_workflow share `hal terraform vcs-workflow enable`).
+ */
+export function buildProvisionCommands(context) {
+  const sequence = Array.isArray(context?.provisionSequence) ? context.provisionSequence : [];
+  const commands = [];
+  for (const capability of sequence) {
+    const action = capability?.action;
+    if (action && commands[commands.length - 1] !== action) {
+      commands.push(action);
+    }
+  }
+  return commands;
+}
+
+function formatFactValue(fact) {
+  if (!fact || fact.ok === false) {
+    return "tool unavailable (rely on the capability notes below for known lab defaults)";
+  }
+  if (fact.structured && typeof fact.structured === "object") {
+    try {
+      return JSON.stringify(fact.structured);
+    } catch {
+      // fall through to text
+    }
+  }
+  const text = String(fact.text || "").trim();
+  return text || "no data returned";
+}
+
+/**
+ * Build the scenario grounding supplement injected into the model's system
+ * prompt. Pure: takes the resolved scenario context plus a map of live MCP
+ * facts keyed by tool name ({ [tool]: { ok, structured, text } }).
+ */
+export function buildScenarioPromptSupplement(context, factsByTool = {}) {
+  const shape = context?.shape;
+  const sequence = Array.isArray(context?.provisionSequence) ? context.provisionSequence : [];
+  if (!shape || sequence.length === 0) {
+    return "";
+  }
+
+  const sections = [];
+  sections.push(
+    "HAL Plus scenario walkthrough — compose a single educational answer that FOLLOWS the shape below.",
+    "Fill each section from its declared source. Never invent hal commands, URLs, or credentials."
+  );
+
+  sections.push(`## Scenario shape: ${shape.title} (${shape.id})`);
+  if (shape.body) {
+    sections.push(shape.body);
+  }
+
+  sections.push("## Grounded capability facts (provision order)");
+  for (const capability of sequence) {
+    const lines = [`### ${capability.label} (${capability.id})`];
+    if (capability.action) {
+      lines.push(`- Provision command: \`${capability.action}\``);
+    }
+    if (capability.manualTrigger) {
+      lines.push(`- Manual trigger: ${capability.manualTrigger}`);
+    }
+    if (capability.observable?.what) {
+      lines.push(`- Observable result: ${capability.observable.what}`);
+    }
+    const surfaces = capability.access?.surfaces || [];
+    const credentials = capability.access?.credentials || [];
+    if (surfaces.length > 0 || credentials.length > 0) {
+      lines.push(`- Access fields: surfaces=[${surfaces.join(", ")}] credentials=[${credentials.join(", ")}]`);
+    }
+    if (capability.notes) {
+      lines.push(`- Lab defaults / notes: ${capability.notes}`);
+    }
+    if (capability.statusTool) {
+      lines.push(`- Live status (${capability.statusTool}): ${formatFactValue(factsByTool[capability.statusTool])}`);
+    }
+    sections.push(lines.join("\n"));
+  }
+
+  sections.push(
+    "## Grounding rules",
+    [
+      "- Provision commands: use ONLY the commands listed above, in order, with duplicates collapsed.",
+      "- Live facts (URLs, endpoints, credentials): take from the Live status blocks or the capability notes — never fabricate.",
+      "- 'Under the hood': break the mechanism into its key components and attach the single most relevant link INLINE to each component (a specific doc section, tutorial step, API endpoint, or video timestamp from the documentation evidence). Prefer targeted links over a generic recap.",
+      "- 'Learn more': the broad recap of typed source cards; the inline citations above are the targeted per-component links.",
+      "- CRITICAL: every link must come from the documentation evidence provided separately. NEVER invent, guess, or emit placeholder links (e.g. '[Design]', '[Tutorial]', bare labels). If no evidence matches a component, explain it plainly and omit the link; if the evidence is empty, say the curated sources are not available yet rather than inventing any.",
+      "- Lab credentials shown above are non-secret demo values and may be displayed."
+    ].join("\n")
+  );
+
+  return sections.join("\n\n");
+}

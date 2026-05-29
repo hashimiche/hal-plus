@@ -77,19 +77,19 @@ Verdict from inspecting `hal/cmd/mcp/ops_api.go`, `advanced.go`, `skills_index.g
 
 **MCP tool surface today (all read-only):**
 `get_runtime_status` / `hal_status_baseline`, `get_vault_status`, `get_terraform_status`,
-`get_tfe_status`, `get_tfe_api_workflow_status` (+ `get_tfe_cli_status`), `get_boundary_status`,
+`get_tfe_status`, `get_tfe_api_workflow_status` (+ `get_tfe_cli_status`), `get_tfe_vcs_workflow_status`, `get_boundary_status`,
 `get_consul_status`, `get_nomad_status`, `get_obs_status`, `get_audit_summary`, `get_oidc_status`,
 `get_jwt_status`, `get_ldap_status`, `get_vault_database_status`, `get_boundary_mariadb_status`,
 `hal_status_structured`, `hal_diagnostics`, plus a skills index + component-help topics.
 
 **MCP gaps that block the scenario vision:**
-1. **No `get_tfe_vcs_workflow_status` tool.** VCS workflow live truth (GitLab URL, org, project, repo
-   name, wired workspace, run-trigger state) exists only as a *static* component-help blob
-   (`terraform_vcs_workflow` → `depends_on: [hal-tfe, hal-gitlab]`,
-   `workflow: "prepare gitlab repo + wire TFE workspace VCS"`). Concrete values are not queryable.
-2. **Credentials redacted by contract.** `opCredentials` exists but the contract forces `Redacted`
-   by default. The "go to GitLab with these credentials" step needs a deliberate, scoped path to
-   surface **lab/demo** credentials (non-secret by design).
+1. **~~No `get_tfe_vcs_workflow_status` tool.~~ DONE (see §9.4).** Implemented in `hal/cmd/mcp/ops_api.go`
+   as `handleTFEVCSWorkflowStatus`: overlays live booleans (TFE runtime, `hal-gitlab` container,
+   `~/.hal/tfe-app-api-token` presence) onto canonical primary-target defaults and returns structured
+   `data.{target,gitlab{web_url,...},tfe{workspace_url,runs_url,...},lab_credentials{gitlab,tfe_admin},ready}`.
+2. **~~Credentials redacted by contract.~~ RESOLVED for lab values.** The redaction check only applies to
+   the typed `opCredentials` field; `lab_credentials` is returned inside the free-form `data` map
+   (lab-scoped, non-secret, already CLI-printed) and is therefore surfaced deliberately.
 3. **No dynamic run link.** The specific TFE run URL after a push is inherently dynamic; stays a
    "manual + here's where to look" step.
 4. **`next_steps` + `docs` envelope fields exist but are underused** — already the right shape for
@@ -100,7 +100,7 @@ Verdict from inspecting `hal/cmd/mcp/ops_api.go`, `advanced.go`, `skills_index.g
 | Layer | Owns | Action |
 |---|---|---|
 | hal+ scenario objects | stable scenario script: ordered steps, manual action, source mix | **build new** |
-| hal MCP | live scenario facts: VCS workflow state, lab endpoints, lab-credential surfacing | **extend** (`get_tfe_vcs_workflow_status` + lab-cred path) |
+| hal MCP | live scenario facts: VCS workflow state, lab endpoints, lab-credential surfacing | **DONE** (`get_tfe_vcs_workflow_status` + lab-cred path shipped) |
 | hal+ doc corpus | explanatory sources (docs/tutorial/VDD/VP/video) | **broaden** (later) |
 
 ---
@@ -317,7 +317,7 @@ To be discovered/spec'd by me (no user input needed):
 - [x] ~~Read hal code to confirm what `hal terraform vcs-workflow enable` actually produces~~ — DONE
       2026-05-29. Source: `hal/cmd/terraform/vcs-workflow.go`. Concrete facts captured in §9.
 - [ ] Finalize scenario object schema (fields, location: `llm/scenarios/`).
-- [ ] Spec `get_tfe_vcs_workflow_status` MCP tool contract (returned fields) + lab-credential surfacing rule.
+- [x] ~~Spec `get_tfe_vcs_workflow_status` MCP tool contract (returned fields) + lab-credential surfacing rule.~~ DONE + IMPLEMENTED (see §9.4).
 - [ ] Define `source_type` taxonomy + YouTube transcript ingestion + citation format for Qdrant.
 
 ---
@@ -463,9 +463,10 @@ This is the **VCS exemplar** that drives the capability-node + scenario-schema +
 - Run link is **dynamic** → point user at the workspace runs page:
   `…/app/organizations/hal/workspaces/tfe-agent-demo/runs` (latest run is top).
 
-### 9.4 Draft — `get_tfe_vcs_workflow_status` MCP tool contract (PROPOSAL, hal repo)
-Read-only status tool, same envelope shape as existing `get_tfe_*` tools (`ops_api.go`). Returns live
-truth so hal+ never hardcodes the values in §9.2. Proposed fields:
+### 9.4 `get_tfe_vcs_workflow_status` MCP tool contract (IMPLEMENTED, hal repo)
+Read-only status tool, same envelope shape as existing `get_tfe_*` tools (`ops_api.go`,
+`handleTFEVCSWorkflowStatus`). Returns live truth so hal+ never hardcodes the values in §9.2.
+Shipped v1 `data` fields:
 ```jsonc
 {
   "target": "primary",                       // primary | twin
@@ -499,6 +500,15 @@ truth so hal+ never hardcodes the values in §9.2. Proposed fields:
 ```
 Open: confirm runs_url path format against this TFE version; decide whether to include latest-run
 state (would need an extra TFE API call — nice-to-have, not required for v1).
+
+**v1 shipped vs proposal:** `target`, `gitlab.*`, `tfe.{running,org,project,workspace,workspace_url,runs_url,auto_apply,branch}`,
+`lab_credentials.*`, `ready`, plus a `notes` string are returned. Live booleans come from
+`terraformRuntimeState()` (TFE), `global.IsContainerRunning(engine, "hal-gitlab")` (GitLab), and
+`~/.hal/tfe-app-api-token` presence (used as the readiness proxy for the foundation/VCS wiring).
+The deeper `vcs_linked` / `oauth_client` fields are **deferred** — they need a TFE API call against
+the workspace; `ready = tfeRunning && gitlabRunning && tokenReady`. v1 covers the **primary** target
+only (twin degrades gracefully). `next_steps` is carried in the envelope's typed `next_steps`
+(title + expected_outcome) rather than a `data` array.
 
 ### 9.5 Draft — capability node + scenario shape (hal-plus side)
 - **Capability nodes** (bounded, ~1 per product/feature) — for this exemplar:
@@ -631,7 +641,7 @@ Schema is now FROZEN for v1. Next: create `llm/scenarios/capabilities.json` + `s
 - **Known follow-up:** `gitlab` and `tfe_vcs_workflow` share the same `action`
   (`hal terraform vcs-workflow enable`), so the raw provision list repeats it — the answer composer
   must dedupe consecutive identical commands. NOT yet wired into `server/index.mjs` /api/chat (no
-  Scenario route yet) and MCP `get_tfe_vcs_workflow_status` is still a §9.4 proposal (hal side).
+  Scenario route yet) and MCP `get_tfe_vcs_workflow_status` is now IMPLEMENTED (hal side, §9.4).
 
 ### 10.7 Graph + shapes expanded (2026-05-29) — generalization proof
 Added two more grounded scenarios so the schema is exercised across products + shape rhythms (user:
@@ -644,7 +654,7 @@ Added two more grounded scenarios so the schema is exercised across products + s
 - **Shapes now 3:** `vcs-driven-workflow` (trigger→observe loop), **`dynamic-secrets`** (request &
   consume — Trigger = `vault read database/creds/dba-role`, Observe = JIT cred + lease/TTL),
   **`cli-driven-workflow`** (API/CLI-driven; reuses `tfe` node — proves subgraph composition).
-- **Schema finding (important):** only `get_tfe_status` (and the proposed `get_tfe_vcs_workflow_status`)
+- **Schema finding (important):** only `get_tfe_status` (and the now-implemented `get_tfe_vcs_workflow_status`)
   return **structured** payloads supporting dotted-path `linkFrom`/`access`. `get_vault_status`,
   `get_vault_database_status`, `get_tfe_api_workflow_status` go through `handleStatusCommandTool` →
   **TEXT** status only. So `observable.linkFrom` is `null` for those nodes and the shape body must
@@ -653,3 +663,32 @@ Added two more grounded scenarios so the schema is exercised across products + s
   `tfe_api_workflow` pulls `tfe.workspace_url` from its dependsOn `tfe` node's structured status.
 - **Smoke-tested:** 3 prompts → correct shape + primary + dependsOn-composed provision + deduped tools;
   off-topic → null. Graph reuse of `tfe` confirmed for the API workflow.
+
+### 10.8 Scenario route wired into `/api/chat` (2026-05-29) — milestone 1 landed
+The Scenario route is now live in `server/index.mjs` (user: "yes go with 1"). Milestone 1 needs only
+Ollama + hal MCP + the existing MiniSearch corpus — **no Qdrant**.
+- **New registry exports** (`server/scenario-registry.mjs`):
+  - `buildProvisionCommands(context)` → ordered hal commands from the dependsOn walk, **consecutive
+    duplicates collapsed** (fixes the gitlab/tfe_vcs_workflow shared-command repeat).
+  - `buildScenarioPromptSupplement(context, factsByTool)` → pure builder. Emits the shape `body` +
+    per-capability grounded facts (provision command, manualTrigger, observable, access field names,
+    lab-default `notes`, and the live MCP status block) + grounding rules. Missing tools render as
+    "tool unavailable (rely on the capability notes…)".
+- **New helper** `gatherScenarioMcpFacts(toolNames)` in `index.mjs`: calls each status tool via
+  `halMcpClient.callTool`, returns `{ [tool]: { ok, structured, text } }`. `structured` =
+  `structuredContent.data ?? structuredContent`. Tools that are unavailable at call time resolve to
+  `{ ok:false }` — graceful degrade. (`get_tfe_vcs_workflow_status` is now implemented; see §9.4.)
+- **Route placement (Route S):** at the TOP of `/api/chat`, right after `prompt` is resolved and BEFORE
+  the behavior/deterministic pipeline. Gate: fires **only** when `resolveScenarioContext(prompt)` returns
+  BOTH a `shape` AND a `primary` capability, so simple status/factual asks are never hijacked. On match it
+  gathers MCP facts + docs (`docsForPromptWithFallback(prompt, null, messages)`, MiniSearch corpus), builds
+  a scenario system prompt (persona + 7-section structure + supplement + doc supplement), and streams
+  Ollama via `proxyOllamaStreamToSSE(res, …, { headersAlreadySet:true })`. SSE meta = `{ source:"scenario",
+  mcpServer:"hal", topic:<shapeId>, capability:<primaryId> }`. Existing A/B/C routes untouched (early return).
+- **Validated:** standalone smoke test — "walk me through the vcs driven workflow with TFE" → shape
+  `vcs-driven-workflow`, primary `tfe_vcs_workflow`, tools `[get_tfe_status, get_tfe_vcs_workflow_status]`,
+  supplement embeds the live structured `get_tfe_status` fact + "tool unavailable" for the missing one;
+  off-topic → null. `get_errors` clean on both files.
+- **Next:** run `npm run dev`, try the prompt in the UI against live MCP, then validate grounding rails
+  before investing in Qdrant (milestone 2). Doc-URL pinning per scenario primary behaviorId is a deferred
+  enhancement (currently passes `null` context to doc search).

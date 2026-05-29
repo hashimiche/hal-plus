@@ -31,7 +31,7 @@
     { "name": "access",          "source": "mcp.statusTool(access.surfaces+credentials)" },
     { "name": "trigger",         "source": "graph.manualTrigger" },
     { "name": "observe",         "source": "mcp.statusTool(observable.linkFrom)" },
-    { "name": "under_the_hood",  "source": "corpus", "coverage": ["docs", "tutorial", "validated-design", "video"] },
+    { "name": "under_the_hood",  "source": "corpus", "coverage": ["docs", "tutorial", "validated-design", "video"], "citePerComponent": true },
     { "name": "learn_more",      "source": "corpus.cards(group_by=source_type)" }
   ],
   "grounding": {
@@ -82,10 +82,18 @@ for a short TTL (2m default, 2h max for `dba-role`), that self-revokes when the 
 `observable.linkFrom` is null there is no live link to resolve — keep this to the observed behavior.
 
 ## Under the hood
-Explain the mechanism grounded in the corpus, with at least one chunk per `coverage` source type: the
-database secrets engine, the least-privileged admin account whose password Vault rotates so nobody
-knows it, the creation/revocation SQL statements, and leases/TTLs driving automatic revocation.
+Explain the mechanism grounded in the corpus, broken into key components, attaching the single most
+relevant source link inline to each one (a specific doc section, tutorial step, API endpoint, or video
+timestamp) so the reader can jump straight to the reinforcing material:
+- **Database secrets engine** — Vault manages credentials for the database. ([source])
+- **Root rotation** — Vault rotates the least-privileged admin password so nobody knows it. ([source])
+- **Creation / revocation SQL** — per-request users are created and dropped via configured statements. ([source])
+- **Leases & TTLs** — the lease drives automatic revocation when it expires. ([source])
+
+Each `[source]` is the closest-matching corpus entry. If none matches a component, explain it plainly
+and omit the link rather than inventing one.
 
 ## Learn more
 Render typed source cards grouped by `source_type` (docs, tutorial, validated-design,
-validated-pattern, video), each linking to a real corpus entry. Prefer one strong card per type.
+validated-pattern, video), each linking to a real corpus entry. This is the broad recap; the inline
+citations above are the targeted, per-component links. Prefer one strong card per type.

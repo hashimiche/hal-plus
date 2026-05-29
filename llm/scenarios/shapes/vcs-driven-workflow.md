@@ -30,7 +30,7 @@
     { "name": "access",          "source": "mcp.statusTool(access.surfaces+credentials)" },
     { "name": "trigger",         "source": "graph.manualTrigger" },
     { "name": "observe",         "source": "mcp.statusTool(observable.linkFrom)" },
-    { "name": "under_the_hood",  "source": "corpus", "coverage": ["docs", "tutorial", "validated-design", "video"] },
+    { "name": "under_the_hood",  "source": "corpus", "coverage": ["docs", "tutorial", "validated-design", "video"], "citePerComponent": true },
     { "name": "learn_more",      "source": "corpus.cards(group_by=source_type)" }
   ],
   "grounding": {
@@ -85,11 +85,20 @@ the workspace runs page (`tfe.runs_url`).
 
 ## Under the hood
 Explain the mechanism grounded in the retrieved corpus, with at least one chunk per source type in
-`coverage` (docs + tutorial + validated-design + video). For the VCS exemplar: the OAuth client links
-TFE to GitLab, the webhook delivers push events, `queue-all-runs` + `auto-apply` turn that event into an
-applied run, and `execution-mode: remote` runs the plan/apply on TFE. Cite concepts from the docs, not
-invented detail.
+`coverage` (docs + tutorial + validated-design + video). Break it into the key components and, for each
+one, attach the single most relevant source link inline so the reader can jump straight to the
+reinforcing material (a specific doc section, tutorial step, API endpoint, or video timestamp) — not just
+a generic recap. For the VCS exemplar:
+- **OAuth client link** — TFE authenticates to GitLab. ([source])
+- **Webhook** — GitLab delivers push events to TFE. ([source])
+- **`queue-all-runs` + `auto-apply`** — the push event becomes an applied run. ([source])
+- **`execution-mode: remote`** — the plan/apply executes on TFE. ([source])
+
+Each `[source]` is the closest-matching corpus entry for that component. If no corpus entry matches a
+component, explain it plainly and omit the link rather than inventing one. Cite concepts from the
+evidence, not invented detail.
 
 ## Learn more
 Render typed source cards grouped by `source_type` (docs, tutorial, validated-design, validated-pattern,
-video), each linking to a real corpus entry. Prefer one strong card per type over many duplicates.
+video), each linking to a real corpus entry. This is the broad recap; the inline citations above are the
+targeted, per-component links. Prefer one strong card per type over many duplicates.

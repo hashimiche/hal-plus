@@ -30,7 +30,7 @@
     { "name": "access",          "source": "mcp.statusTool(access.surfaces+credentials)" },
     { "name": "trigger",         "source": "graph.manualTrigger" },
     { "name": "observe",         "source": "mcp.statusTool(observable.linkFrom)" },
-    { "name": "under_the_hood",  "source": "corpus", "coverage": ["docs", "tutorial", "validated-design", "video"] },
+    { "name": "under_the_hood",  "source": "corpus", "coverage": ["docs", "tutorial", "validated-design", "video"], "citePerComponent": true },
     { "name": "learn_more",      "source": "corpus.cards(group_by=source_type)" }
   ],
   "grounding": {
@@ -79,10 +79,17 @@ the API/CLI rather than a VCS webhook. `observable.linkFrom` is null here, so ke
 behavior plus the `tfe.workspace_url` already surfaced in Access.
 
 ## Under the hood
-Explain the mechanism grounded in the corpus, with at least one chunk per `coverage` source type: the
-TFE run API, remote execution, and how a CLI/API client (tfx) creates configuration versions and queues
-runs — contrasted with the VCS webhook path.
+Explain the mechanism grounded in the corpus, broken into key components, attaching the single most
+relevant source link inline to each one (a specific doc section, tutorial step, API endpoint, or video
+timestamp) so the reader can jump straight to the reinforcing material:
+- **Configuration version** — the CLI/API client (tfx) uploads config to create a new version. ([source])
+- **Run API** — a run is queued against the workspace via the TFE run API. ([source])
+- **Remote execution** — the plan/apply executes on TFE, contrasted with the VCS webhook path. ([source])
+
+Each `[source]` is the closest-matching corpus entry. If none matches a component, explain it plainly
+and omit the link rather than inventing one.
 
 ## Learn more
 Render typed source cards grouped by `source_type` (docs, tutorial, validated-design,
-validated-pattern, video), each linking to a real corpus entry. Prefer one strong card per type.
+validated-pattern, video), each linking to a real corpus entry. This is the broad recap; the inline
+citations above are the targeted, per-component links. Prefer one strong card per type.

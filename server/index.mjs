@@ -21,6 +21,11 @@ import { deterministicIntentResponse, isCodeIntent, isFollowUpPrompt, isKnowledg
 import { buildDocSearchPromptSupplement, retrieveDocsForPrompt, initCorpus } from "./doc-search.mjs";
 import { baselineProductsToUi, getOllamaRuntime, lokiStateFromBaseline } from "./runtime-status.mjs";
 import { streamSSESections, streamSSEText, proxyOllamaStreamToSSE } from "./sse.mjs";
+import {
+  resolveScenarioContext,
+  listRequiredStatusTools,
+  buildScenarioPromptSupplement
+} from "./scenario-registry.mjs";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -68,7 +73,7 @@ function resolveOllamaBaseUrl() {
 }
 
 const OLLAMA_BASE_URL = resolveOllamaBaseUrl();
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen3.5";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4:latest";
 const OLLAMA_MODEL_LABEL = process.env.OLLAMA_MODEL_LABEL || OLLAMA_MODEL;
 const OLLAMA_CONTEXT_WINDOW = Number(process.env.OLLAMA_CONTEXT_WINDOW || 32768);
 const OLLAMA_KEEP_ALIVE = String(process.env.OLLAMA_KEEP_ALIVE || "5m").trim() || "5m";
@@ -320,6 +325,36 @@ async function callMcpWithFallback(primaryTool, fallbackTools, args = {}) {
   return primary;
 }
 
+// Gather live MCP status facts for every status tool a scenario depends on.
+// Returns a map keyed by tool name: { ok, structured, text }. Tools that do not
+// exist yet (e.g. a proposed status tool) resolve to { ok: false } so the model
+// falls back to the capability notes.
+async function gatherScenarioMcpFacts(toolNames) {
+  const factsByTool = {};
+  await Promise.all(
+    (toolNames || []).map(async (toolName) => {
+      try {
+        const result = await halMcpClient.callTool(toolName, {});
+        const textContent = Array.isArray(result?.content)
+          ? result.content
+              .filter((part) => part?.type === "text" && typeof part.text === "string")
+              .map((part) => part.text)
+              .join("\n")
+              .trim()
+          : "";
+        factsByTool[toolName] = {
+          ok: !result?.isError,
+          structured: result?.structuredContent?.data ?? result?.structuredContent ?? null,
+          text: textContent
+        };
+      } catch {
+        factsByTool[toolName] = { ok: false, structured: null, text: "" };
+      }
+    })
+  );
+  return factsByTool;
+}
+
 async function rankDocsForPrompt(prompt, context) {
   const resources = collectBehaviorResources(context).slice(0, 10);
   if (!prompt || resources.length === 0) {
@@ -511,6 +546,64 @@ app.post("/api/chat", async (req, res) => {
     const inputMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
 
     const prompt = lastUserPrompt(inputMessages);
+
+    // Route S (scenario): a multi-step educational walkthrough. Fires only when both a
+    // scenario shape AND a primary capability resolve, so it never hijacks simple
+    // status/factual questions. Composes the answer from the capability graph
+    // (provision commands + lab defaults), live hal MCP status, and doc evidence.
+    const scenarioContext = resolveScenarioContext(prompt);
+    if (scenarioContext?.shape && scenarioContext?.primary) {
+      const scenarioTools = listRequiredStatusTools(scenarioContext);
+      const [scenarioFacts, scenarioDocs] = await Promise.all([
+        gatherScenarioMcpFacts(scenarioTools).catch(() => ({})),
+        docsForPromptWithFallback(prompt, null, inputMessages).catch(() => ({ docs: [], chunks: [], mode: "error" }))
+      ]);
+
+      const scenarioSystemPrompt = [
+        "You are HAL Plus, an educational HashiCorp Academy Labs assistant for interns, customers, and engineers.",
+        "Answer the user's question as a guided, end-to-end scenario walkthrough using the shape and grounded facts below.",
+        "Write warm, clear prose with the section headings from the shape (Overview, Provision, Access, Trigger, Observe, Under the hood, Learn more).",
+        "Show hal commands in fenced bash blocks. Display lab credentials plainly (they are non-secret demo values).",
+        "Obey the grounding rules exactly: never invent commands, URLs, or credentials.",
+        "",
+        buildScenarioPromptSupplement(scenarioContext, scenarioFacts),
+        buildDocSearchPromptSupplement(scenarioDocs)
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      const scenarioMessages = [
+        { role: "system", content: scenarioSystemPrompt },
+        ...inputMessages
+          .filter((m) => typeof m?.role === "string" && typeof m?.content === "string")
+          .map((m) => ({ role: m.role, content: m.content }))
+      ];
+
+      const scenarioResponse = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          keep_alive: OLLAMA_KEEP_ALIVE,
+          stream: true,
+          messages: scenarioMessages
+        })
+      });
+
+      if (!scenarioResponse.ok || !scenarioResponse.body) {
+        const errBody = await scenarioResponse.text();
+        res.status(502).json({ error: `Ollama error: ${errBody || scenarioResponse.statusText}` });
+        return;
+      }
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.write(`data: ${JSON.stringify({ type: "meta", source: "scenario", mcpServer: "hal", topic: scenarioContext.shape.id, capability: scenarioContext.primary.id })}\n\n`);
+      await proxyOllamaStreamToSSE(res, scenarioResponse, { headersAlreadySet: true });
+      return;
+    }
+
     const behaviorContext = resolveBehaviorContextFromConversation(inputMessages, prompt);
 
     // Route C: if no behavior matched and this looks like a follow-up, retrieve the last matched context
