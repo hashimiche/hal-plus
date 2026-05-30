@@ -230,16 +230,69 @@ export function buildProvisionCommands(context) {
   return commands;
 }
 
+/**
+ * Flatten a nested object into dotted-path => value lines, used to surface the
+ * exact endpoint/credential values the model must copy verbatim.
+ */
+function flattenFact(value, prefix = "", out = []) {
+  if (value === null || value === undefined) {
+    return out;
+  }
+  if (Array.isArray(value)) {
+    const scalars = value.filter((item) => item === null || typeof item !== "object");
+    if (scalars.length === value.length) {
+      out.push(`${prefix} = [${scalars.map((item) => String(item)).join(", ")}]`);
+    } else {
+      value.forEach((item, index) => flattenFact(item, `${prefix}[${index}]`, out));
+    }
+    return out;
+  }
+  if (typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      flattenFact(child, prefix ? `${prefix}.${key}` : key, out);
+    }
+    return out;
+  }
+  out.push(`${prefix} = ${String(value)}`);
+  return out;
+}
+
+// Leaf fields that already hold a complete URL/endpoint. The model tends to
+// genericise URLs when it sees their component parts, so we surface these
+// pre-built values explicitly and instruct it to copy them verbatim.
+const URL_FIELD_PATTERN = /(_url|web_url|endpoint|address)$/i;
+
 function formatFactValue(fact) {
+  const structured = fact && fact.structured && typeof fact.structured === "object" ? fact.structured : null;
+  const hasStructured = structured && Object.keys(structured).length > 0;
+  if (hasStructured) {
+    let json;
+    try {
+      json = JSON.stringify(structured);
+    } catch {
+      json = null;
+    }
+    // Pull complete URLs out separately so the model copies them verbatim
+    // rather than rebuilding them from org/project/workspace parts.
+    const urls = flattenFact(structured)
+      .filter((line) => {
+        const path = line.split(" = ")[0];
+        const leaf = path.split(".").pop();
+        return URL_FIELD_PATTERN.test(leaf || "") && line.includes("http");
+      });
+    const urlHint = urls.length > 0 ? ` | COPY THESE URLS VERBATIM (do not rebuild from parts): ${urls.join("; ")}` : "";
+    if (json) {
+      // HAL status tools return canonical endpoints + lab_credentials in their
+      // error envelope too (e.g. lab not yet provisioned). Surface those values
+      // rather than discarding them; just flag that the lab is not live yet.
+      if (fact.ok === false) {
+        return `lab not currently running — resolve answer values from these canonical/last-known facts, and tell the user to provision the lab first: ${json}${urlHint}`;
+      }
+      return `${json}${urlHint}`;
+    }
+  }
   if (!fact || fact.ok === false) {
     return "tool unavailable (rely on the capability notes below for known lab defaults)";
-  }
-  if (fact.structured && typeof fact.structured === "object") {
-    try {
-      return JSON.stringify(fact.structured);
-    } catch {
-      // fall through to text
-    }
   }
   const text = String(fact.text || "").trim();
   return text || "no data returned";
@@ -280,10 +333,13 @@ export function buildScenarioPromptSupplement(context, factsByTool = {}) {
     if (capability.observable?.what) {
       lines.push(`- Observable result: ${capability.observable.what}`);
     }
+    if (capability.observable?.linkFrom) {
+      lines.push(`- Observable link JSON path (resolve against this capability's Live status data; never print the path literally): ${capability.observable.linkFrom}`);
+    }
     const surfaces = capability.access?.surfaces || [];
     const credentials = capability.access?.credentials || [];
     if (surfaces.length > 0 || credentials.length > 0) {
-      lines.push(`- Access fields: surfaces=[${surfaces.join(", ")}] credentials=[${credentials.join(", ")}]`);
+      lines.push(`- Access JSON paths (each is a path INTO this capability's Live status data — resolve to the actual value, never print the path): surfaces=[${surfaces.join(", ")}] credentials=[${credentials.join(", ")}]`);
     }
     if (capability.notes) {
       lines.push(`- Lab defaults / notes: ${capability.notes}`);
@@ -295,10 +351,24 @@ export function buildScenarioPromptSupplement(context, factsByTool = {}) {
   }
 
   sections.push(
+    "## Deterministic sections (DO NOT WRITE THESE YOURSELF)",
+    [
+      "- The **Access** section body and the verbatim links inside **Observe** are inserted AUTOMATICALLY by the server from live MCP data, so you do NOT need to get URLs or credentials exactly right.",
+      "- Under the `## Access` heading, write only this single placeholder line and nothing else: `(access details inserted automatically)`.",
+      "- In the `## Observe` section, explain the flow in prose but do NOT write any URL — the exact links are appended automatically below your prose.",
+      "- Everywhere else, never print a raw URL or credential value; refer to them in words (e.g. 'the workspace URL', 'the TFE admin login'). The Access section is the single source of truth for those values."
+    ].join("\n")
+  );
+
+  sections.push(
     "## Grounding rules",
     [
       "- Provision commands: use ONLY the commands listed above, in order, with duplicates collapsed.",
       "- Live facts (URLs, endpoints, credentials): take from the Live status blocks or the capability notes — never fabricate.",
+      "- Dotted tokens such as `tfe.runs_url`, `gitlab.web_url`, `tfe.workspace_url`, `lab_credentials.tfe_admin`, `lab_credentials.gitlab` are JSON PATHS into the matching capability's Live status `data`. ALWAYS resolve them to the real value and show the value (e.g. print `haladmin` / `hal9000FTW` / the actual URL). NEVER print a dotted path literally in the answer.",
+      "- When a path resolves to a URL/endpoint, copy that value VERBATIM — do not rebuild it from org/project/workspace parts, change its casing, or drop path segments (e.g. keep the `/app/` segment and the exact workspace name).",
+      "- If a path cannot be resolved (no data at all), describe the item in plain words (e.g. 'the TFE admin username the CLI prints') — do NOT print the path and do NOT invent a value.",
+      "- If a Live status block says the lab is not currently running, still present the canonical endpoints/credentials, but add a short note that the user must run the provision commands first before they work.",
       "- 'Under the hood': break the mechanism into its key components and attach the single most relevant link INLINE to each component (a specific doc section, tutorial step, API endpoint, or video timestamp from the documentation evidence). Prefer targeted links over a generic recap.",
       "- 'Learn more': the broad recap of typed source cards; the inline citations above are the targeted per-component links.",
       "- CRITICAL: every link must come from the documentation evidence provided separately. NEVER invent, guess, or emit placeholder links (e.g. '[Design]', '[Tutorial]', bare labels). If no evidence matches a component, explain it plainly and omit the link; if the evidence is empty, say the curated sources are not available yet rather than inventing any.",
@@ -308,3 +378,264 @@ export function buildScenarioPromptSupplement(context, factsByTool = {}) {
 
   return sections.join("\n\n");
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Deterministic Access / Observe rendering.
+//
+// Small local models reliably mangle long URLs (rebuilding them from org/
+// project/workspace parts) and sometimes drop credentials. Rather than trust
+// the model, we resolve the exact surfaces, credentials, and observable links
+// from the live MCP tool data ourselves and splice them into the answer. The
+// model only writes narrative prose.
+// ───────────────────────────────────────────────────────────────────────────
+
+function resolvePath(root, dottedPath) {
+  if (!root || typeof root !== "object") {
+    return undefined;
+  }
+  const parts = String(dottedPath || "").split(".").filter(Boolean);
+  let cur = root;
+  for (const part of parts) {
+    if (cur && typeof cur === "object" && part in cur) {
+      cur = cur[part];
+    } else {
+      return undefined;
+    }
+  }
+  return cur;
+}
+
+function resolvePathAcrossFacts(dottedPath, factsByTool) {
+  for (const fact of Object.values(factsByTool || {})) {
+    const value = resolvePath(fact?.structured, dottedPath);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+const SURFACE_LABELS = {
+  "tfe.workspace_url": "TFE workspace",
+  "tfe.runs_url": "TFE runs page",
+  "gitlab.web_url": "GitLab project"
+};
+
+const CREDENTIAL_LABELS = {
+  "lab_credentials.tfe_admin": "Terraform Enterprise admin",
+  "lab_credentials.gitlab": "GitLab"
+};
+
+// Maps a lab_credentials.<leaf> path to a `hal creds status` service id, so
+// credentials can be sourced from the authoritative get_active_credentials tool
+// when that service is covered there (e.g. TFE). GitLab is not a creds-status
+// service, so it falls back to the workflow tool's lab_credentials block.
+const CREDENTIAL_LEAF_TO_CREDS_SERVICE = {
+  tfe_admin: "tfe"
+};
+
+function labelForSurface(pathStr) {
+  if (SURFACE_LABELS[pathStr]) {
+    return SURFACE_LABELS[pathStr];
+  }
+  const [ns, ...rest] = String(pathStr).split(".");
+  const leaf = (rest.pop() || "").replace(/_(url|endpoint|address)$/i, "");
+  return `${ns} ${leaf}`.trim();
+}
+
+function labelForCredential(pathStr) {
+  if (CREDENTIAL_LABELS[pathStr]) {
+    return CREDENTIAL_LABELS[pathStr];
+  }
+  return String(pathStr).split(".").pop().replace(/_/g, " ");
+}
+
+function credentialFromCredsStatus(leaf, factsByTool) {
+  const creds = factsByTool?.get_active_credentials?.structured;
+  const serviceId = CREDENTIAL_LEAF_TO_CREDS_SERVICE[leaf];
+  if (!serviceId || !creds || !Array.isArray(creds.services)) {
+    return undefined;
+  }
+  const service = creds.services.find((svc) => svc.service === serviceId);
+  if (!service || !Array.isArray(service.entries)) {
+    return undefined;
+  }
+  const withBoth = service.entries.find((entry) => entry.username && entry.secret);
+  if (withBoth) {
+    return { username: withBoth.username, password: withBoth.secret };
+  }
+  const withUser = service.entries.find((entry) => entry.username);
+  if (withUser) {
+    return { username: withUser.username, password: withUser.secret };
+  }
+  return undefined;
+}
+
+function renderCredentialValue(value) {
+  if (value && typeof value === "object") {
+    const user = value.username ?? value.user ?? value.login;
+    const secret = value.password ?? value.secret ?? value.token;
+    if (user && secret) {
+      return `\`${user}\` / \`${secret}\``;
+    }
+    if (user) {
+      return `\`${user}\``;
+    }
+    if (secret) {
+      return `\`${secret}\``;
+    }
+    return null;
+  }
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  return `\`${String(value)}\``;
+}
+
+/**
+ * Resolve the exact Access surfaces/credentials and Observe links for a scenario
+ * from live MCP facts. Returns markdown blocks (or null when nothing resolves).
+ *   { accessBlock, observeLinks }
+ */
+export function buildDeterministicScenarioBlocks(context, factsByTool = {}) {
+  const primary = context?.primary;
+  const sequence = Array.isArray(context?.provisionSequence) ? context.provisionSequence : [];
+  if (!primary) {
+    return { accessBlock: null, observeLinks: null };
+  }
+
+  const surfacePaths = Array.isArray(primary.access?.surfaces) ? primary.access.surfaces : [];
+  const credentialPaths = Array.isArray(primary.access?.credentials) ? primary.access.credentials : [];
+
+  const surfaceLines = [];
+  for (const pathStr of surfacePaths) {
+    const value = resolvePathAcrossFacts(pathStr, factsByTool);
+    if (typeof value === "string" && value.trim()) {
+      surfaceLines.push(`- ${labelForSurface(pathStr)}: ${value.trim()}`);
+    }
+  }
+
+  const credentialLines = [];
+  for (const pathStr of credentialPaths) {
+    const leaf = String(pathStr).split(".").pop();
+    const value = credentialFromCredsStatus(leaf, factsByTool) ?? resolvePathAcrossFacts(pathStr, factsByTool);
+    const rendered = renderCredentialValue(value);
+    if (rendered) {
+      credentialLines.push(`- ${labelForCredential(pathStr)}: ${rendered}`);
+    }
+  }
+
+  const accessParts = [];
+  if (surfaceLines.length > 0) {
+    accessParts.push(["**Endpoints**", ...surfaceLines].join("\n"));
+  }
+  if (credentialLines.length > 0) {
+    accessParts.push(["**Credentials** (non-secret lab demo values)", ...credentialLines].join("\n"));
+  }
+  const accessBlock = accessParts.length > 0 ? accessParts.join("\n\n") : null;
+
+  // Observe links: resolve each capability's observable.linkFrom, de-duplicated by URL.
+  const observeLines = [];
+  const seenUrls = new Set();
+  for (const capability of sequence) {
+    const linkPath = capability?.observable?.linkFrom;
+    if (!linkPath) {
+      continue;
+    }
+    const value = resolvePathAcrossFacts(linkPath, factsByTool);
+    if (typeof value === "string" && value.trim() && !seenUrls.has(value.trim())) {
+      seenUrls.add(value.trim());
+      observeLines.push(`- ${labelForSurface(linkPath)}: ${value.trim()}`);
+    }
+  }
+  const observeLinks = observeLines.length > 0 ? observeLines.join("\n") : null;
+
+  return { accessBlock, observeLinks };
+}
+
+const SECTION_HEADING_PATTERN = /^#{1,6}\s+/;
+// Literal JSON-path leaks like `tfe.workspace_url` or `lab_credentials.tfe_admin`.
+// The negative lookbehind for URL/host characters (/, :, ., word) prevents this
+// from matching real hostnames such as `tfe.localhost` inside a URL.
+const LEAKED_PATH_PATTERN = /(?<![\w/:.])(?:tfe|gitlab|lab_credentials)\.[a-z_]+(?:\.[a-z_]+)?/gi;
+const URL_PATTERN = /https?:\/\/\S+/g;
+
+function findSectionBounds(lines, headingMatcher) {
+  let start = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (SECTION_HEADING_PATTERN.test(lines[i]) && headingMatcher.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) {
+    return null;
+  }
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (SECTION_HEADING_PATTERN.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return { start, end };
+}
+
+/**
+ * Splice the deterministic Access body and Observe links into the model's
+ * answer. The model is instructed to leave a placeholder under `## Access` and
+ * to omit URLs in `## Observe`; here we enforce that deterministically and
+ * scrub any leaked dotted paths.
+ */
+export function spliceDeterministicSections(answerText, blocks = {}) {
+  let text = String(answerText || "");
+  const { accessBlock, observeLinks } = blocks;
+
+  let lines = text.split("\n");
+
+  // Access: replace the whole section body with the deterministic block.
+  if (accessBlock) {
+    const bounds = findSectionBounds(lines, /access/i);
+    if (bounds) {
+      const heading = lines[bounds.start];
+      lines = [
+        ...lines.slice(0, bounds.start),
+        heading,
+        "",
+        accessBlock,
+        "",
+        ...lines.slice(bounds.end)
+      ];
+    }
+  }
+
+  // Observe: keep the model's prose, strip any URLs it wrote, append verbatim links.
+  if (observeLinks) {
+    const bounds = findSectionBounds(lines, /observe/i);
+    if (bounds) {
+      const bodyLines = lines
+        .slice(bounds.start + 1, bounds.end)
+        .map((line) => line.replace(URL_PATTERN, "the link below"));
+      const rebuilt = [
+        lines[bounds.start],
+        ...bodyLines,
+        "",
+        "**Open it directly:**",
+        observeLinks,
+        ""
+      ];
+      lines = [...lines.slice(0, bounds.start), ...rebuilt, ...lines.slice(bounds.end)];
+    }
+  }
+
+  text = lines.join("\n");
+
+  // Defensive: never leave a literal dotted path in the rendered answer.
+  text = text.replace(LEAKED_PATH_PATTERN, (match) => {
+    const leaf = match.split(".").pop().replace(/_/g, " ");
+    return `the ${leaf}`;
+  });
+
+  return text;
+}
+

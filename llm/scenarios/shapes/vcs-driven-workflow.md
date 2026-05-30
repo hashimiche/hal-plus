@@ -68,9 +68,10 @@ hal terraform vcs-workflow enable   # boots GitLab + links the workspace (capabi
 ## Access
 Surface the live endpoints and lab credentials the user needs, read from the status tool fields named
 in `access.surfaces` and `access.credentials`. Present credentials plainly — they are lab/demo,
-non-secret, and already printed by the CLI. Example fields for the VCS exemplar: GitLab repo
-(`gitlab.web_url`, login `lab_credentials.gitlab`) and the TFE workspace (`tfe.workspace_url`, admin
-`lab_credentials.tfe_admin`).
+non-secret, and already printed by the CLI. Resolve each dotted path to its actual value from the
+Live status data and print the value (not the path). For the VCS exemplar: the GitLab repo (URL
+resolved from `gitlab.web_url`, login resolved from `lab_credentials.gitlab`) and the TFE workspace
+(URL resolved from `tfe.workspace_url`, admin resolved from `lab_credentials.tfe_admin`).
 
 ## Trigger
 State the single manual action that activates the observable, taken verbatim from
@@ -81,7 +82,7 @@ repo.
 Tell the user exactly what they will see and where, using `{{primary.observable.what}}` and the link
 resolved from `{{primary.observable.linkFrom}}` (the dotted path into the MCP payload). For the VCS
 exemplar: a webhook fires, TFE queues and auto-applies a run, and the latest run appears at the top of
-the workspace runs page (`tfe.runs_url`).
+the workspace runs page (link resolved from `tfe.runs_url` — print the resolved URL, not the path).
 
 ## Under the hood
 Explain the mechanism grounded in the retrieved corpus, with at least one chunk per source type in

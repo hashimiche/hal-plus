@@ -65,7 +65,8 @@ hal terraform api-workflow enable   # builds + runs the ephemeral TFX helper she
 
 ## Access
 Surface the TFE workspace endpoint and admin login from the `tfe` node's structured status
-(`tfe.workspace_url`, `lab_credentials.tfe_admin` via `get_tfe_status`). The helper itself
+(URL resolved from `tfe.workspace_url`, admin resolved from `lab_credentials.tfe_admin` via
+`get_tfe_status` — print the resolved values, not the paths). The helper itself
 (`get_tfe_api_workflow_status`) returns text status, so describe the helper container
 (`hal-tfe-api`) from the capability notes rather than a dotted path.
 
@@ -76,7 +77,7 @@ queue a run using tfx / the TFE API.
 ## Observe
 Describe the proof from `{{primary.observable.what}}`: a run appears in the TFE workspace, queued via
 the API/CLI rather than a VCS webhook. `observable.linkFrom` is null here, so keep this to the observed
-behavior plus the `tfe.workspace_url` already surfaced in Access.
+behavior plus the workspace URL (resolved from `tfe.workspace_url`) already surfaced in Access.
 
 ## Under the hood
 Explain the mechanism grounded in the corpus, broken into key components, attaching the single most

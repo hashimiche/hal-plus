@@ -37,7 +37,7 @@ UX contract
 - Documentation links in answers come from the pre-built corpus (BM25 + embedding rerank, MCP-independent). Links are section-level (`href#anchor`) when available. Keep at most two links per answer.
 
 Response contract — intent routes
-HAL Plus uses three distinct answer routes. Route selection happens before any output is built.
+HAL Plus uses four distinct answer routes (A/B/C plus scenario Route S). Route selection happens before any output is built.
 See `llm/ANSWER_QUALITY.md` for the full spec, examples, and body-content authoring rules.
 
 **Route A — Knowledge / Factual**
@@ -57,6 +57,17 @@ See `llm/ANSWER_QUALITY.md` for the full spec, examples, and body-content author
 - Trigger: short prompt with no behavior match, or starts with "and", "what about", "on a", "same for".
 - Format: skip deterministic entirely; forward last-matched behavior id + body as grounding to the model, then let the model answer freely.
 - Requires `lastMatchedBehaviorId` tracking across the request handling path in `server/index.mjs`.
+
+**Route S — Scenario walkthrough**
+- Trigger: `resolveScenarioContext(prompt)` (in `server/scenario-registry.mjs`) returns BOTH a shape AND a primary capability (e.g. "walk me through the VCS-driven workflow with TFE"). Defined by `llm/scenarios/capabilities.json` + `shapes/*.md`.
+- Format: a multi-section guided walkthrough — Overview → Provision → Access → Trigger → Observe → Under the hood → Learn more. Emits `{ type: "meta", source: "scenario" }`.
+- **Deterministic Access/Observe rendering (do NOT let the model write these):** the model is instructed to write only narrative prose plus the literal placeholder `(access details inserted automatically)` under `## Access`, and to omit URLs in `## Observe`. The server then:
+  1. Gathers live MCP facts for every dependency status tool + `get_active_credentials`.
+  2. `buildDeterministicScenarioBlocks(context, factsByTool)` resolves `access.surfaces`/`access.credentials` (dotted JSON paths) and `observable.linkFrom` into an exact Endpoints + Credentials block and an "Open it directly" link list. Credentials prefer `get_active_credentials`, falling back to the capability's `lab_credentials` path.
+  3. `spliceDeterministicSections(answer, blocks)` replaces the `## Access` body with the rendered block, rewrites `## Observe` (strips model URLs → appends verbatim links), and scrubs any leaked dotted paths (negative-lookbehind regex so hostnames like `tfe.localhost` are never corrupted).
+- **Non-streaming generate:** Route S calls Ollama with `stream:false`, splices the full answer, then replays it via `streamSSESections(res, answer, { headersAlreadySet: true })` (sectioned SSE). This is the deliberate tradeoff that guarantees exact URLs/credentials instead of trusting the small model to copy long workspace URLs verbatim.
+- Canonical Access values resolve **even when the lab is down**, because the hal `get_tfe_vcs_workflow_status` tool emits its canonical endpoints/credentials in the runtime-error envelope too (see `hal/LLM_CONTEXT.md`).
+
 
 1. For **enable/configure/deploy** intents (Route B) this is a `Preflight:` check command (e.g. `hal vault status`) rather than a raw baseline message, because the baseline is typically generic and unhelpful for action flows.
 2. HAL-first command path.

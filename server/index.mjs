@@ -24,7 +24,9 @@ import { streamSSESections, streamSSEText, proxyOllamaStreamToSSE } from "./sse.
 import {
   resolveScenarioContext,
   listRequiredStatusTools,
-  buildScenarioPromptSupplement
+  buildScenarioPromptSupplement,
+  buildDeterministicScenarioBlocks,
+  spliceDeterministicSections
 } from "./scenario-registry.mjs";
 
 const app = express();
@@ -553,11 +555,19 @@ app.post("/api/chat", async (req, res) => {
     // (provision commands + lab defaults), live hal MCP status, and doc evidence.
     const scenarioContext = resolveScenarioContext(prompt);
     if (scenarioContext?.shape && scenarioContext?.primary) {
-      const scenarioTools = listRequiredStatusTools(scenarioContext);
+      // Always gather the authoritative credentials tool alongside the
+      // scenario's status tools so the deterministic renderer can source
+      // credentials from `hal creds status` where it covers the service.
+      const scenarioTools = Array.from(new Set([...listRequiredStatusTools(scenarioContext), "get_active_credentials"]));
       const [scenarioFacts, scenarioDocs] = await Promise.all([
         gatherScenarioMcpFacts(scenarioTools).catch(() => ({})),
         docsForPromptWithFallback(prompt, null, inputMessages).catch(() => ({ docs: [], chunks: [], mode: "error" }))
       ]);
+
+      // Resolve exact Access surfaces/credentials and Observe links up front so
+      // we can splice them into the answer deterministically (the model mangles
+      // long URLs and sometimes drops credentials).
+      const deterministicBlocks = buildDeterministicScenarioBlocks(scenarioContext, scenarioFacts);
 
       const scenarioSystemPrompt = [
         "You are HAL Plus, an educational HashiCorp Academy Labs assistant for interns, customers, and engineers.",
@@ -579,28 +589,36 @@ app.post("/api/chat", async (req, res) => {
           .map((m) => ({ role: m.role, content: m.content }))
       ];
 
+      // Generate the full narrative non-streaming so we can splice the
+      // deterministic Access/Observe blocks (and scrub leaked dotted paths)
+      // before emitting. We trade a little time-to-first-token for exact URLs
+      // and credentials — then stream the assembled answer section by section.
       const scenarioResponse = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: OLLAMA_MODEL,
           keep_alive: OLLAMA_KEEP_ALIVE,
-          stream: true,
+          stream: false,
           messages: scenarioMessages
         })
       });
 
-      if (!scenarioResponse.ok || !scenarioResponse.body) {
+      if (!scenarioResponse.ok) {
         const errBody = await scenarioResponse.text();
         res.status(502).json({ error: `Ollama error: ${errBody || scenarioResponse.statusText}` });
         return;
       }
 
+      const scenarioPayload = await scenarioResponse.json();
+      const rawAnswer = scenarioPayload?.message?.content || "";
+      const assembledAnswer = spliceDeterministicSections(rawAnswer, deterministicBlocks);
+
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       res.write(`data: ${JSON.stringify({ type: "meta", source: "scenario", mcpServer: "hal", topic: scenarioContext.shape.id, capability: scenarioContext.primary.id })}\n\n`);
-      await proxyOllamaStreamToSSE(res, scenarioResponse, { headersAlreadySet: true });
+      await streamSSESections(res, assembledAnswer, { delayMs: 60, headersAlreadySet: true });
       return;
     }
 

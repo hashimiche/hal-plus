@@ -16,31 +16,69 @@
 
 ---
 
-## 0. ⏸️ RESUME HERE (checkpoint — 2026-05-29)
+## 0. ⏸️ RESUME HERE (checkpoint — 2026-05-30)
 
-**Branch:** `feature/halplus-v2` on **both** repos. Everything below is **committed + pushed**:
+**Branch:** `feature/halplus-v2` on **both** repos.
+
+**⚠️ UNCOMMITTED (this session — deterministic Access/Observe rendering):** the work below is
+implemented, live-tested, and PASSING, but **not yet committed** (awaiting user approval). Changed files:
+- hal: `cmd/creds/creds.go` (haladmin reconcile + `CollectActiveCredentials()` + structured types),
+  `cmd/mcp/ops_api.go` (new `get_active_credentials` tool + `handleTFEVCSWorkflowStatus` always emits
+  canonical data, even on runtime-error envelope), `cmd/mcp/ops_api_test.go` (tool added to both lists).
+- hal-plus: `server/scenario-registry.mjs` (`buildDeterministicScenarioBlocks` +
+  `spliceDeterministicSections` + helpers), `server/sse.mjs` (`headersAlreadySet` option),
+  `server/index.mjs` (Route S → non-streaming generate → splice → `streamSSESections`).
+
+**What this session solved (the gemma4 URL-fidelity residual from the prior checkpoint):** instead of
+trusting the small model to copy the deep workspace URL verbatim, **Access + Observe are now rendered
+deterministically server-side**. The model writes only narrative prose and the literal placeholder
+`(access details inserted automatically)` under `## Access`; HAL Plus splices in the exact Endpoints +
+Credentials block (resolved from MCP `data`) and rewrites `## Observe` to strip model-emitted URLs and
+append an "Open it directly:" block of verbatim links. A leaked-dotted-path scrubber (negative-lookbehind
+regex so it never corrupts hostnames like `tfe.localhost`) is the final safety net.
+
+**Key enabler:** `get_tfe_vcs_workflow_status` now returns its canonical endpoints/credentials **even when
+the lab is down** (runtime-error envelope previously had `data:null`). New `get_active_credentials` tool
+wraps `hal creds status` for structured per-service creds. TFE admin user reconciled to `haladmin`.
+
+**Live test (lab DOWN, port 9021):** PASSED. Access = deterministic block with verbatim
+`https://tfe.localhost:8443/app/organizations/hal/workspaces/tfe-agent-demo`, GitLab
+`http://127.0.0.1:8080/root/tfe-agent-demo`, creds `root`/`hal9000FTW` + `haladmin`/`hal9000FTW`; Observe
+has prose + "Open it directly:" verbatim links (incl. runs_url); zero leaked dotted paths.
+
+**Tradeoff accepted:** scenario route (Route S) is now **non-streaming generate** (`stream:false`) so the
+full answer can be spliced before sectioned SSE replay via `streamSSESections({headersAlreadySet:true})`.
+Slightly higher time-to-first-token, in exchange for exact URLs/creds.
+
+**Next actions (pick up here):**
+- [ ] Get user approval, then **commit both repos** (build/test gate: hal `go build ./... && go test ./cmd/mcp/`; hal-plus `node --check`).
+- [ ] **Open item to confirm:** `get_active_credentials` surfaces the live TFE API token in free-form
+      `data` (CLI parity, local lab) — acceptable or gate it?
+- [ ] Decide on **milestone 2 = Qdrant + source diversity** (docs/tutorials/VDD/VP/YouTube) — the
+      "Learn more" / under-the-hood citations stay thin until the corpus broadens (see §4.A).
+- [ ] Optional MCP follow-ups deferred in v1: `vcs_linked`/`oauth_client` (needs a TFE API call) and
+      twin-target support (currently degrades gracefully). See §9.4.
+
+<details>
+<summary>Previous checkpoint — 2026-05-29 (milestone 1: scenario route + grounding fix)</summary>
+
+**Committed + pushed at that point:**
 - hal `c652513` — `mcp: add get_tfe_vcs_workflow_status structured tool`
 - hal-plus `acefd43` — `scenario: wire scenario route, per-component citations, vcs grounding`
 
 **Done so far (milestone 1 of the scenario track):**
 1. Scenario layer scaffolded — `llm/scenarios/capabilities.json` (6 nodes), `shapes/*.md` (3 shapes:
    `vcs-driven-workflow`, `cli-driven-workflow`, `dynamic-secrets`), `server/scenario-registry.mjs`.
-2. **Scenario route (Route S)** wired into `server/index.mjs` `/api/chat` — fires only when
-   `resolveScenarioContext` returns BOTH a shape AND a primary capability; gathers live MCP facts +
-   doc-search context, streams a grounded multi-section walkthrough from Ollama. See §10.8.
-3. Per-component inline citations + strict anti-placeholder grounding rule across all 3 shapes (§ "answer quality").
-4. Default model → `gemma4:latest` (`OLLAMA_MODEL` override; local tags `gemma4:latest` 9.6GB, `gemma4:26b-mlx` 16GB).
-5. **hal MCP tool `get_tfe_vcs_workflow_status` implemented** (read-only, structured) — §9.4 is now
-   IMPLEMENTED, not a proposal. Returns gitlab/tfe endpoints, runs_url, lab_credentials, ready.
+2. **Scenario route (Route S)** wired into `server/index.mjs` `/api/chat`.
+3. Per-component inline citations + strict anti-placeholder grounding rule across all 3 shapes.
+4. Default model → `gemma4:latest`.
+5. **hal MCP tool `get_tfe_vcs_workflow_status` implemented** (read-only, structured).
 
-**Next actions (pick up here):**
-- [ ] **Live UI test** the VCS-workflow prompt end-to-end now that the MCP tool returns real facts
-      (start hal-plus dev server + a TFE/GitLab lab; confirm Route S fires and grounding renders without
-      placeholder links). This is the immediate next step.
-- [ ] Decide on **milestone 2 = Qdrant + source diversity** (docs/tutorials/VDD/VP/YouTube) — the
-      "Learn more" / under-the-hood citations stay thin until the corpus broadens (see §4.A).
-- [ ] Optional MCP follow-ups deferred in v1: `vcs_linked`/`oauth_client` (needs a TFE API call) and
-      twin-target support (currently degrades gracefully). See §9.4.
+The 2026-05-29 grounding fix (prompt-side path resolution + surfacing canonical data from error
+envelopes) was **superseded** this session by deterministic server-side rendering for the Access/Observe
+sections — the residual it left (gemma genericizing the deep workspace URL) is now moot for those
+sections because the model no longer writes those URLs.
+</details>
 
 **Notes for a fresh model picking this up:**
 - Read order at session start: this file → `LLM_BEHAVIOR.md` → `UX_PARITY.md` → `design.md` →

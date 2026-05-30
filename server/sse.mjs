@@ -14,9 +14,11 @@ export async function streamSSESections(res, text, options = {}) {
     .map((section) => section.trim())
     .filter(Boolean);
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
+  if (!options.headersAlreadySet) {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+  }
 
   for (let index = 0; index < sections.length; index += 1) {
     const suffix = index < sections.length - 1 ? "\n\n" : "";
