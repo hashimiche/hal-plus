@@ -639,3 +639,74 @@ export function spliceDeterministicSections(answerText, blocks = {}) {
   return text;
 }
 
+const MARKDOWN_LINK_PATTERN = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+const BARE_URL_PATTERN = /https?:\/\/[^\s)\]]+/g;
+
+function normalizeUrl(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[).,;:\]]+$/, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+/**
+ * Collect the set of URLs the model is actually grounded in for a scenario:
+ * the retrieved corpus section links (chunks[].href) plus the canonical lab
+ * URLs we splice into the deterministic Access/Observe blocks. Any other URL
+ * the small model emits is, by definition, ungrounded (i.e. invented).
+ */
+export function collectGroundedScenarioUrls(scenarioDocs = {}, deterministicBlocks = {}) {
+  const urls = [];
+  const chunks = Array.isArray(scenarioDocs?.chunks) ? scenarioDocs.chunks : [];
+  for (const chunk of chunks) {
+    if (chunk?.href) urls.push(chunk.href);
+  }
+  const docs = Array.isArray(scenarioDocs?.docs) ? scenarioDocs.docs : [];
+  for (const doc of docs) {
+    if (doc?.href) urls.push(doc.href);
+    else if (doc?.url) urls.push(doc.url);
+  }
+  for (const block of [deterministicBlocks?.accessBlock, deterministicBlocks?.observeLinks]) {
+    if (typeof block !== "string") continue;
+    for (const match of block.matchAll(BARE_URL_PATTERN)) {
+      urls.push(match[0]);
+    }
+  }
+  return urls;
+}
+
+/**
+ * Strip any link the model invented. Markdown links whose target is not in the
+ * grounded allowlist are collapsed to their visible label; bare ungrounded URLs
+ * are removed. This is the deterministic guard against fabricated documentation
+ * links (e.g. plausible-looking but non-existent `developer.hashicorp.com/.../tfx/*`
+ * pages for the community `tfx` CLI). Grounded corpus and lab URLs are preserved.
+ */
+export function scrubUngroundedLinks(answerText, allowedUrls = []) {
+  let text = String(answerText || "");
+  const allowed = new Set((allowedUrls || []).map(normalizeUrl).filter(Boolean));
+  // Without a grounded allowlist we cannot distinguish real from invented; in
+  // that case leave the answer untouched rather than stripping every link.
+  if (allowed.size === 0) {
+    return text;
+  }
+
+  text = text.replace(MARKDOWN_LINK_PATTERN, (full, label, url) =>
+    allowed.has(normalizeUrl(url)) ? full : label
+  );
+
+  text = text.replace(BARE_URL_PATTERN, (url) =>
+    allowed.has(normalizeUrl(url)) ? url : ""
+  );
+
+  // Tidy up artifacts left by removed bare URLs: empty parens, trailing
+  // "see " / "at " danglers, doubled spaces, and spaces before newlines.
+  text = text
+    .replace(/\(\s*\)/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n");
+
+  return text;
+}
+

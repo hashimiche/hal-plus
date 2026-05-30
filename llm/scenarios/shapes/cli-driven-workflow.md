@@ -74,6 +74,12 @@ Surface the TFE workspace endpoint and admin login from the `tfe` node's structu
 State the action from `{{primary.manualTrigger}}`: from inside the helper shell, drive a workspace and
 queue a run using tfx / the TFE API.
 
+> Grounding note on **tfx**: `tfx` is a *community* CLI (`ghcr.io/straubt1/tfx`), **not** an official
+> HashiCorp product. Describe it as the open-source helper baked into the `hal-tfe-api` container.
+> Never present tfx as a HashiCorp tool and never link it to `developer.hashicorp.com` — there are no
+> official tfx doc pages. If you cite tfx at all, only use a link that appears in the retrieved corpus
+> excerpts below; otherwise mention it by name with no link.
+
 ## Observe
 Describe the proof from `{{primary.observable.what}}`: a run appears in the TFE workspace, queued via
 the API/CLI rather than a VCS webhook. `observable.linkFrom` is null here, so keep this to the observed

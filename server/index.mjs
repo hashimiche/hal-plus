@@ -26,7 +26,9 @@ import {
   listRequiredStatusTools,
   buildScenarioPromptSupplement,
   buildDeterministicScenarioBlocks,
-  spliceDeterministicSections
+  spliceDeterministicSections,
+  collectGroundedScenarioUrls,
+  scrubUngroundedLinks
 } from "./scenario-registry.mjs";
 
 const app = express();
@@ -612,7 +614,14 @@ app.post("/api/chat", async (req, res) => {
 
       const scenarioPayload = await scenarioResponse.json();
       const rawAnswer = scenarioPayload?.message?.content || "";
-      const assembledAnswer = spliceDeterministicSections(rawAnswer, deterministicBlocks);
+      // Splice deterministic Access/Observe blocks, then strip any link the
+      // small model invented (e.g. fabricated developer.hashicorp.com/.../tfx/*
+      // pages) by allowing only grounded corpus + lab URLs through.
+      const groundedUrls = collectGroundedScenarioUrls(scenarioDocs, deterministicBlocks);
+      const assembledAnswer = scrubUngroundedLinks(
+        spliceDeterministicSections(rawAnswer, deterministicBlocks),
+        groundedUrls
+      );
 
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");

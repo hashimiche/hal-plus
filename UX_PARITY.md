@@ -55,6 +55,8 @@ Responsive behavior
 ### C. Header and Status Row (right panel)
 - Branding row with logo, product name, subtitle/tagline.
 - Theme switch and health chips are in the same compact top block as branding to maximize chat space.
+- Theme switch is client-side React state persisted in `localStorage` (`halplus.theme`); toggling does NOT navigate/reload, so the chat session is preserved.
+- Theme control is a single sun/moon slider toggle (`.theme-switch`, animated), not labelled buttons.
 - Status chips with hover detail popovers for:
   - Loki readiness
   - LLM runtime/model readiness
@@ -72,6 +74,7 @@ Responsive behavior
 - Placeholder animation while waiting for streamed text.
 - Inline error message cards for failed requests.
 - Auto-scroll pause behavior with jump-to-latest control.
+- Per-code-block copy buttons (`.code-copy-btn`) and a whole-answer copy button (`.answer-copy-btn`, `CopyAnswerButton`) in the assistant message head; the answer button copies the full raw markdown and reveals on message hover.
 
 ### E. Prompt Composer
 - Multi-line text input.

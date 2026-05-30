@@ -37,6 +37,15 @@ body {
     radial-gradient(circle at 80% 12%, rgba(35, 154, 179, 0.18), transparent 26%),
     linear-gradient(135deg, rgba(255, 255, 255, 0.35), transparent 55%),
     var(--bg);
+  transition: background 220ms ease, color 220ms ease;
+}
+
+/* Smoothly fade panels, text and borders when the theme toggles. */
+.app-shell .panel,
+.app-shell .health-chip,
+.app-shell .chat-msg,
+.app-shell textarea {
+  transition: background-color 220ms ease, background 220ms ease, border-color 220ms ease, color 220ms ease;
 }
 
 .app-shell.has-docs {
@@ -533,6 +542,37 @@ body {
   color: var(--muted);
 }
 
+.msg-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.answer-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 86%, black 14%);
+  opacity: 0.65;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.chat-msg:hover .answer-copy-btn {
+  opacity: 1;
+}
+
+.answer-copy-btn:hover {
+  color: var(--text);
+  opacity: 1;
+}
+
 .msg-markdown {
   font-size: 0.94rem;
   line-height: 1.55;
@@ -862,26 +902,101 @@ button.stop-btn {
   padding: 7px 11px;
 }
 
-.theme-switcher-inline {
-  padding: 3px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.84rem;
+/* Cute sun/moon slider toggle (adapted from the mind-the-gap design). */
+.theme-switch {
+  position: relative;
+  display: inline-block;
+  width: 54px;
+  height: 30px;
+  flex: none;
 }
 
-.theme-switcher-inline a {
-  text-decoration: none;
-  color: var(--text);
+.theme-switch .theme-switch-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.theme-switch .theme-switch-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: linear-gradient(160deg, var(--panel) 0%, var(--panel-2) 100%);
+  transition: 0.3s;
+  border-radius: 30px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 5px 12px;
 }
 
-.theme-switcher-inline a.active {
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  border-color: transparent;
+.theme-switch .theme-switch-slider:before {
+  position: absolute;
+  content: "";
+  height: 24px;
+  width: 24px;
+  border-radius: 20px;
+  left: 2px;
+  bottom: 2px;
+  z-index: 2;
+  background-color: var(--bg);
+  transition: 0.3s;
+}
+
+.theme-switch .theme-switch-sun svg {
+  position: absolute;
+  top: 6px;
+  left: 31px;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  animation: theme-switch-rotate 15s linear infinite;
+}
+
+.theme-switch .theme-switch-moon svg {
+  fill: var(--muted);
+  position: absolute;
+  top: 6px;
+  left: 5px;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  animation: theme-switch-tilt 5s linear infinite;
+}
+
+@keyframes theme-switch-rotate {
+  0% {
+    transform: rotate(0);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes theme-switch-tilt {
+  0% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-10deg);
+  }
+  75% {
+    transform: rotate(10deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+.theme-switch .theme-switch-input:checked + .theme-switch-slider {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.theme-switch .theme-switch-input:focus-visible + .theme-switch-slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-switch .theme-switch-input:checked + .theme-switch-slider:before {
+  transform: translateX(24px);
 }
 
 @keyframes docSlideIn {
