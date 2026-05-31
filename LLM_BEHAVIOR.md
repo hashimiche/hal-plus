@@ -18,6 +18,7 @@ Ownership split
 - New product work should default to this split unless there is a strong reason to keep a fact entirely inside HAL Plus.
 - HAL Plus website runtime views (status/health/catalog grounding) must use HAL MCP tool calls and structured responses, not parsed output from `hal status`.
 - MCP compatibility should be handled via tool fallbacks (for example, `hal_status_baseline` -> `get_runtime_status`) rather than direct CLI status execution.
+- MCP health gate: the HAL MCP chip reports ONLINE when discovery succeeds (server reachable + `tools/list`). Missing advertised tools are informational, not a hard-down — they appear as a suffix on the chip detail and do not turn it red. Lab runtime baseline (container-engine availability) is tracked separately as `runtimeOk`. The required read-only contract tools are `hal_status_baseline`, `get_capabilities`, `hal_policy_profile`, and `validate_command`; all four are implemented in HAL MCP.
 
 UX contract
 - Keep the main UI compact and chat-first: top status row, scrollable chat area, then prompt composer anchored at the bottom.

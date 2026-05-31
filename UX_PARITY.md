@@ -61,6 +61,7 @@ Responsive behavior
   - Loki readiness
   - LLM runtime/model readiness
   - HAL MCP executable status
+    - Chip is ONLINE when MCP discovery succeeds (server reachable + `tools/list` returns). The lab runtime baseline (container-engine state) is a separate `runtimeOk` signal, and any advertised-but-missing tools are surfaced as an informational suffix only — they do NOT flip the chip red. The chip is only neutral/down when discovery itself is unavailable.
   - HAL product statuses (running/not deployed, endpoint, version, feature flags)
 - Token context chip appears in the same status row.
 - Runtime chips and product chips should be visually distinct but share one compact row contract.

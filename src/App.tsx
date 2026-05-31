@@ -618,7 +618,7 @@ export default function App() {
           {missingTools.length > 0 ? (
             <div className="chip-overlay-tags">
               {missingTools.map((toolName) => (
-                <span key={toolName}>{toolName} missing</span>
+                <span key={toolName}>{toolName} not advertised</span>
               ))}
             </div>
           ) : null}

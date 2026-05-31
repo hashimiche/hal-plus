@@ -467,12 +467,18 @@ app.get("/api/status", async (_req, res) => {
     const skillsCount = Number(runtimeCatalog?.skills?.skills_count || 0);
     const missingTools = missingCoreMcpTools(runtimeCatalog, null);
     const discoveryAvailable = Boolean(runtimeCatalog);
-    const mcpTransportOk = discoveryAvailable && missingTools.length === 0;
+    // MCP is "online" when discovery works (server reachable + tools listed).
+    // Missing advertised tools are informational, not a hard down — and the lab
+    // runtime baseline (engine state) is a separate signal surfaced via products.
+    const mcpTransportOk = discoveryAvailable;
     const mcpRuntimeOk = !baseline?.isError;
     const baselineMessage = typeof baseline?.structuredContent?.message === "string"
       ? baseline.structuredContent.message.trim()
       : "";
     const engineUnavailable = isEngineUnavailableBaselineError(baselineMessage);
+    const missingToolsNote = missingTools.length > 0
+      ? ` · ${missingTools.length} optional tool${missingTools.length === 1 ? "" : "s"} not advertised: ${missingTools.join(", ")}`
+      : "";
 
     res.json({
       runtime: {
@@ -492,19 +498,15 @@ app.get("/api/status", async (_req, res) => {
           ok: mcpTransportOk,
           runtimeOk: mcpRuntimeOk,
           url: String(process.env.HAL_MCP_HTTP_URL || "").trim() || null,
-          detail: mcpTransportOk && mcpRuntimeOk
-            ? `HAL MCP runtime tools ready (${toolCount} tools, ${capabilityCount} actions, ${skillsCount} skills)`
-            : mcpTransportOk && !mcpRuntimeOk
-              ? engineUnavailable
-                ? `HAL MCP reachable over HTTP (${toolCount} tools)`
+          detail: !discoveryAvailable
+            ? "HAL MCP discovery unavailable"
+            : mcpRuntimeOk
+              ? `HAL MCP online · ${toolCount} tools, ${capabilityCount} actions, ${skillsCount} skills${missingToolsNote}`
+              : engineUnavailable
+                ? `HAL MCP online · ${toolCount} tools (lab runtime baseline unavailable: container engine offline)${missingToolsNote}`
                 : baselineMessage
-                ? `HAL MCP reachable over HTTP, but runtime baseline failed: ${baselineMessage}`
-                : "HAL MCP reachable over HTTP, but runtime baseline failed"
-            : !discoveryAvailable
-              ? "HAL MCP discovery unavailable"
-              : missingTools.length > 0
-                ? `HAL MCP missing required tools: ${missingTools.join(", ")}`
-                : "HAL MCP runtime tools unavailable",
+                  ? `HAL MCP online · ${toolCount} tools (runtime baseline failed: ${baselineMessage})${missingToolsNote}`
+                  : `HAL MCP online · ${toolCount} tools (runtime baseline failed)${missingToolsNote}`,
           missingTools
         }
       },
