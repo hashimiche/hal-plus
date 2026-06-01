@@ -404,6 +404,32 @@ _Append-only. Date each entry. Record decisions, discoveries, and step completio
   vault → vault k8s enable; statusTool exists (no new hal/MCP work). Corpus for k8s/VSO still thin →
   Under-the-hood/Learn-more degrade gracefully until Qdrant track (#1).
 
+- **2026-06-01** — **Third exemplar shape ADDED — `pki-certificates` (Vault as a private CA).** Roadmap
+  item #2 continued; **first exemplar to require new cross-repo hal MCP work.** Added a new **read-only
+  MCP tool `get_vault_pki_status`** in `hal/cmd/mcp/ops_api.go` (descriptor + handler mirroring
+  `get_k8s_integration_status`; runs `hal vault pki` status mode, returns TEXT execution output;
+  recommended_commands lead with `hal vault pki` then `enable`/`--acme`/`--k8s`), registered it in the
+  three `ops_api_test.go` invocation arrays (build + `go test ./cmd/mcp/` green), documented it in
+  `hal/LLM_CONTEXT.md`, rebuilt `hal-linux` (arm64) and the `ghcr.io/hashimiche/hal-mcp:latest` image.
+  hal-plus side: capability node `vault_pki` (feature, dependsOn [vault], statusTool
+  `get_vault_pki_status`, action `hal vault pki enable`, altActions [`--acme`, `--k8s`]) and
+  `shapes/pki-certificates.md` (priority 88, primaryCapabilityHint `vault_pki`, **8 slots** — adds a
+  `tradeoffs` slot comparing the two demo layers). **Teaching beats** (all grounded in
+  `hal/cmd/vault/pki.go`): Root CA (`pki-root`, ~5y) signs Intermediate CA (`pki-int`, ~2y); leaf certs
+  minted on demand from issuing role `hal-role` (allowed domains hal.local/cluster.local/svc.cluster.local,
+  max_ttl 24h, RSA 2048); **private keys never leave Vault** (clients get signed cert + chain only). Base
+  command always enables Vault's built-in ACME endpoint (role `acme-demo`, 5m TTL). Two additive demo
+  layers: `--acme` (Caddy pod `hal-caddy-acme`, auto-renews at ~1/3 of 5m life, `https://acme.localhost:8090`)
+  and `--k8s` (cert-manager `ClusterIssuer vault-pki-issuer` → Certificate `hal-web-pki-cert` on nginx
+  pod, `https://pki.localhost:8089`). **Grounding guardrails in notes/shape:** never claim private keys
+  are exported; ACME TTL is 5m / ~1/3-life renew (don't invent longer); `--k8s` leaf certs come from
+  cert-manager via the Vault ClusterIssuer (not minted by the app); demo layers need kind/kubectl/helm on
+  PATH. Validated: 9 PKI phrasings ("vault as a ca", "issue tls certificates", "auto-renew certificates",
+  "cert-manager with vault", "leaf certificates for my pods", "acme with vault", …) → pki-certificates;
+  vso-csi / dynamic-secrets / secure-database-access / VCS routing unaffected; provision walk
+  vault → vault pki enable; statusTools resolve to [get_vault_status, get_vault_pki_status]. Corpus for
+  PKI still thin → Under-the-hood/Learn-more degrade gracefully until Qdrant track (#1).
+
 ---
 
 ## 7. Open Questions / TODO
