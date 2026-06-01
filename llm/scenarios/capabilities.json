@@ -127,6 +127,44 @@
       "access": { "surfaces": [], "credentials": [] },
       "sourceTags": { "product": "vault", "feature": "database-secrets" },
       "notes": "MariaDB container hal-vault-mariadb at mariadb.localhost:3306. Vault mounts database/ (mysql-database-plugin), rotates the vaultadmin root password, role dba-role default_ttl 2m / max_ttl 2h, revocation DROP USER. statusTool returns TEXT status (no structured payload)."
+    },
+    {
+      "id": "boundary",
+      "kind": "product",
+      "label": "HashiCorp Boundary",
+      "product": "boundary",
+      "behaviorId": null,
+      "provides": "A running Boundary controller/worker that brokers identity-based, least-exposure access to targets without distributing network or credential details to users.",
+      "dependsOn": [],
+      "action": "hal boundary create",
+      "statusTool": "get_boundary_status",
+      "manualTrigger": null,
+      "observable": {
+        "what": "The Boundary controller API is reachable and the admin console responds.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "boundary", "feature": "core" },
+      "notes": "Container hal-boundary; admin/controller API at http://boundary.localhost:9200. statusTool returns TEXT status (no structured payload), so no dotted-path linkFrom."
+    },
+    {
+      "id": "boundary_mariadb",
+      "kind": "feature",
+      "label": "Boundary brokered database access (Vault dynamic credentials)",
+      "product": "boundary",
+      "behaviorId": null,
+      "provides": "Identity-based access to a MariaDB target where Boundary brokers short-lived credentials minted on demand by Vault's database secrets engine — the user authenticates as themselves and never sees a database password.",
+      "dependsOn": ["vault_database", "boundary"],
+      "action": "hal boundary mariadb enable --with-vault",
+      "statusTool": "get_boundary_mariadb_status",
+      "manualTrigger": "Authenticate to Boundary as dba-user, then open a brokered session to the target: (1) BOUNDARY_AUTHENTICATE_PASSWORD_PASSWORD=password boundary authenticate password -addr http://boundary.localhost:9200 -auth-method-id <lab-auth> -login-name dba-user, then (2) boundary connect mysql -addr http://boundary.localhost:9200 -target-id <mariadb-secure-access>.",
+      "observable": {
+        "what": "Boundary opens a session to the mariadb-secure-access target and injects a fresh, Vault-minted MySQL credential (role dba-role) into the connection. The credential is short-lived and auto-revokes when the Vault lease expires; no static database password is handed to the user.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "boundary", "feature": "brokered-credentials" },
+      "notes": "Requires `hal vault database enable` first (provides container hal-vault-mariadb + Vault role database/creds/dba-role). The --with-vault path attaches Boundary to the existing hal-vault-mariadb and runs linkBoundaryToVault(): writes Vault policy boundary-controller, mints an orphan 24h token, then in Boundary creates credential store hal-vault-store (type vault, address http://hal-vault:8200), credential library mariadb-dba-creds (type vault-generic, path database/creds/dba-role, http_method GET) and adds it as the brokered credential source on target mariadb-secure-access. Boundary scopes: org hal-academy / project db-infrastructure. Auth method lab-auth (password), account login dba-user / password, principal user 'DBA Admin', role dba-role. Target type tcp, default_port 3306, host mariadb-server -> hal-vault-mariadb. Controller at http://boundary.localhost:9200. NOTE: the plain `hal boundary mariadb enable` (without --with-vault) instead deploys a standalone hal-boundary-target-mariadb with a STATIC db user (admin/password) and no Vault brokering — only the --with-vault path tells the Vault-dynamic-credentials story. The lab wires a single DBA principal/role (no separate least-privilege 'regular user' role) and does not enable audit devices/session recording. statusTool returns TEXT status (no structured payload), so observable.linkFrom is null."
     }
   ]
 }

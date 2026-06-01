@@ -366,6 +366,24 @@ _Append-only. Date each entry. Record decisions, discoveries, and step completio
 - **2026-05-29** — **Scenario scaffolding files CREATED** (user: "ok go"): `capabilities.json`,
   `shapes/vcs-driven-workflow.md`, `server/scenario-registry.mjs`. Smoke-tested OK. See §10.6.
   Not yet wired into /api/chat; MCP status tool still a proposal.
+- **2026-06-01** — **New exemplar shape ADDED — `secure-database-access` (Boundary + Vault).** Roadmap
+  item #2 (more exemplar shapes) progressed via track B (cheaper wins). User supplied intent phrasings.
+  Added two capability nodes to `capabilities.json`: `boundary` (product, `get_boundary_status`) and
+  `boundary_mariadb` (feature, `dependsOn [vault_database, boundary]`, `get_boundary_mariadb_status`,
+  action `hal boundary mariadb enable --with-vault`). Added `shapes/secure-database-access.md` (priority
+  90, primaryCapabilityHint `boundary_mariadb`, same 7 slots as dynamic-secrets). **Grounding decision:**
+  the Vault-brokered story is specifically the `--with-vault` path (linkBoundaryToVault → Boundary vault
+  credential store + library `database/creds/dba-role` brokered to target `mariadb-secure-access`); the
+  plain `enable` uses a STATIC db user and is explicitly excluded in the notes. Two user phrasings held
+  back from being "promised" — "DBA **and** a regular user with different permissions" (lab wires a
+  single dba-role principal, no second least-privilege role) and "**audit** access" (not part of the
+  enable flow; separate `hal vault audit` / Boundary session recording). Both still ROUTE here via the
+  "vault and boundary" phrase, but the capability notes explicitly state these aren't wired so the model
+  corrects the premise instead of fabricating. Validated: intent routing (4 grounded phrasings → this
+  shape; generic "dynamic database credentials" still → dynamic-secrets; VCS unaffected), provision walk
+  order (vault → vault database → boundary create → boundary mariadb --with-vault), required status tools
+  all exist (no new hal/MCP work), deterministic blocks build clean. Corpus for Boundary still thin, so
+  "Under the hood"/"Learn more" degrade gracefully until the Qdrant track (#1) broadens it.
 
 ---
 
