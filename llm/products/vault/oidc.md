@@ -89,7 +89,7 @@
   "notes": [
     "If the user asks about pipeline tokens or GitLab CI, route to JWT instead of OIDC.",
     "When callback or redirect issues appear, keep the diagnosis anchored on auth/oidc/config and the allowed callback URL.",
-    "Use hal vault oidc --enable as the primary recommendation, then cite the OIDC auth docs for deeper role or claim configuration."
+    "Use hal vault oidc enable as the primary recommendation, then cite the OIDC auth docs for deeper role or claim configuration."
   ],
   "samplePrompts": [
     "How do I enable OIDC login for Vault in HAL?",

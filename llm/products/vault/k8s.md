@@ -53,9 +53,9 @@
     }
   ],
   "actionCommands": [
-    "hal vault k8s --enable",
-    "hal vault k8s --enable --csi",
-    "hal vault k8s --force"
+    "hal vault k8s enable",
+    "hal vault k8s enable --csi",
+    "hal vault k8s update"
   ],
   "verifyCommands": [
     "hal vault k8s",
@@ -108,7 +108,7 @@
   ],
   "notes": [
     "If CSI is requested on OSS Vault, explain the automatic downgrade to native mode instead of pretending CSI succeeded.",
-    "Use hal vault k8s --enable as the HAL-first answer for kubernetes auth setup questions.",
+    "Use hal vault k8s enable as the HAL-first answer for kubernetes auth setup questions.",
     "When the user asks how to configure the auth engine, pair the HAL command with the direct Kubernetes auth docs link."
   ],
   "samplePrompts": [
@@ -119,7 +119,7 @@
 }
 -->
 
-When you run `hal vault k8s --enable`, HAL wires a full KinD cluster to the local Vault instance and deploys Vault Secrets Operator via Helm.
+When you run `hal vault k8s enable`, HAL wires a full KinD cluster to the local Vault instance and deploys Vault Secrets Operator via Helm.
 
 ### What gets created
 
