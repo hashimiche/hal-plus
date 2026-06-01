@@ -384,6 +384,25 @@ _Append-only. Date each entry. Record decisions, discoveries, and step completio
   order (vault → vault database → boundary create → boundary mariadb --with-vault), required status tools
   all exist (no new hal/MCP work), deterministic blocks build clean. Corpus for Boundary still thin, so
   "Under the hood"/"Learn more" degrade gracefully until the Qdrant track (#1) broadens it.
+- **2026-06-01** — **Second exemplar shape ADDED — `vso-csi` (Vault Secrets Operator on Kubernetes,
+  native vs CSI).** Roadmap item #2 continued. Added capability node `vault_k8s_vso` (feature, dependsOn
+  [vault], statusTool `get_k8s_integration_status`, action `hal vault k8s enable`, altAction
+  `hal vault k8s enable --csi`) and `shapes/vso-csi.md` (priority 88, primaryCapabilityHint
+  `vault_k8s_vso`, **8 slots** — adds a dedicated `tradeoffs` slot for the comparative native-vs-CSI
+  question). **Three teaching beats** captured from the user (all grounded in `hal/cmd/vault/k8s.go`):
+  (1) delivery contrast — native `VaultStaticSecret`→K8s `Secret`→env var vs CSI `csi.vso.hashicorp.com`
+  file projection; (2) live-update loop — native-only `refreshAfter:15s` + `rolloutRestartTargets`
+  auto-rolls `hal-web-backend`, and `hal-web-proxy` fronts it (replicas 2 / maxUnavailable 0 / maxSurge 1)
+  so the reload is zero-downtime/transparent; (3) security tradeoff — native Secret is base64 in etcd
+  (encrypted at rest only if etcd encryption-at-rest configured), CSI keeps it out of etcd. **Two hard
+  grounding guardrails in the notes:** CSI is **Enterprise-gated** (`isVaultEnterprise` → health.Version
+  contains 'ent'; on Vault CE `--csi` silently downgrades to native, csiMode=false) so never present CSI
+  as available on CE; and state the K8s-Secret security point *precisely* (base64-in-etcd, not
+  "plaintext-insecure" nor "fully encrypted"; CSI's edge is "not in etcd", not "stronger crypto").
+  Validated: 5 VSO/CSI phrasings (incl. "my security team doesn't like k8s secrets … difference with
+  CSI") → vso-csi; dynamic-secrets / secure-database-access / VCS routing unaffected; provision walk
+  vault → vault k8s enable; statusTool exists (no new hal/MCP work). Corpus for k8s/VSO still thin →
+  Under-the-hood/Learn-more degrade gracefully until Qdrant track (#1).
 
 ---
 

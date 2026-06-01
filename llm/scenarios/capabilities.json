@@ -165,6 +165,26 @@
       "access": { "surfaces": [], "credentials": [] },
       "sourceTags": { "product": "boundary", "feature": "brokered-credentials" },
       "notes": "Requires `hal vault database enable` first (provides container hal-vault-mariadb + Vault role database/creds/dba-role). The --with-vault path attaches Boundary to the existing hal-vault-mariadb and runs linkBoundaryToVault(): writes Vault policy boundary-controller, mints an orphan 24h token, then in Boundary creates credential store hal-vault-store (type vault, address http://hal-vault:8200), credential library mariadb-dba-creds (type vault-generic, path database/creds/dba-role, http_method GET) and adds it as the brokered credential source on target mariadb-secure-access. Boundary scopes: org hal-academy / project db-infrastructure. Auth method lab-auth (password), account login dba-user / password, principal user 'DBA Admin', role dba-role. Target type tcp, default_port 3306, host mariadb-server -> hal-vault-mariadb. Controller at http://boundary.localhost:9200. NOTE: the plain `hal boundary mariadb enable` (without --with-vault) instead deploys a standalone hal-boundary-target-mariadb with a STATIC db user (admin/password) and no Vault brokering — only the --with-vault path tells the Vault-dynamic-credentials story. The lab wires a single DBA principal/role (no separate least-privilege 'regular user' role) and does not enable audit devices/session recording. statusTool returns TEXT status (no structured payload), so observable.linkFrom is null."
+    },
+    {
+      "id": "vault_k8s_vso",
+      "kind": "feature",
+      "label": "Vault Secrets Operator on Kubernetes (native sync vs CSI)",
+      "product": "vault",
+      "behaviorId": null,
+      "provides": "Vault as the source of truth for application secrets on Kubernetes: the Vault Secrets Operator (VSO) reconciles a Vault secret into a workload, either by syncing it to a native Kubernetes Secret (env var) or by projecting it through the CSI driver (mounted file) — the app never talks to Vault directly.",
+      "dependsOn": ["vault"],
+      "action": "hal vault k8s enable",
+      "altActions": ["hal vault k8s enable --csi"],
+      "statusTool": "get_k8s_integration_status",
+      "manualTrigger": "Native mode only: update the source secret in Vault (e.g. vault kv put kv-k8s/app1 <key>=<new-value>) and refresh the demo app — VSO re-syncs within refreshAfter (15s) and auto-rolls the pod.",
+      "observable": {
+        "what": "The demo app at http://web.localhost:8088 serves a value that originated in Vault and was delivered by VSO without the app calling Vault. In native mode, changing the value in Vault triggers a rolling restart (rolloutRestartTargets) of hal-web-backend; because hal-web-proxy fronts the backend (replicas 2, maxUnavailable 0, maxSurge 1) the reload is zero-downtime and transparent to the user. In CSI mode the value is projected as a mounted file with no native Kubernetes Secret and no auto-rollout.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "vault", "feature": "kubernetes-vso" },
+      "notes": "Action `hal vault k8s enable` brings up a KinD cluster (on hal-net), installs the Vault Secrets Operator via Helm into namespace vso, wires Vault auth (kubernetes/ native, or jwt-k8s/ OIDC with --jwt), and deploys a demo app exposed at http://web.localhost:8088 (service hal-web-proxy in namespace app1, fronting Deployment hal-web-backend). Requires kind + kubectl + helm on PATH. statusTool get_k8s_integration_status runs `hal vault k8s` (status) and returns TEXT status (KinD/VSO/auth/demo-mode), so observable.linkFrom is null. TWO DELIVERY MODES on the same command: (1) NATIVE (default) — VaultStaticSecret (mount kv-k8s, path app1, refreshAfter 15s) writes a real Kubernetes Secret hal-web-secret consumed as an env var, with rolloutRestartTargets -> Deployment hal-web-backend so a Vault value change auto-rolls the pod. (2) CSI (--csi) — secret is projected via csi.vso.hashicorp.com directly into the pod's (tmpfs/memory) volume as a file; NO Kubernetes Secret is created and there is NO rolloutRestartTargets auto-rollout. ENTERPRISE GATE: --csi requires Vault Enterprise (isVaultEnterprise checks health.Version contains 'ent'; sets helm csi.enabled=true + CRD csisecrets.secrets.hashicorp.com). On Vault Community Edition, `--csi` is detected as unlicensed and SILENTLY DOWNGRADES to native sync (csiMode=false) — so the out-of-etcd CSI story is only available on Enterprise. SECURITY-TRADEOFF FRAMING (state precisely, do not overclaim): a native Kubernetes Secret is persisted in etcd base64-encoded and is only encrypted at rest if the cluster has etcd encryption-at-rest (KMS/aescbc) configured; it is visible via `kubectl get secret` under namespace RBAC, and env-var consumption can leak via process listings/crash dumps. CSI avoids this by NOT creating a persistent Secret object (file lives only in the pod's volume) — its advantage is 'not resident in etcd', NOT 'stronger encryption'. The auto-reload demo (refreshAfter + rolloutRestartTargets + transparent proxy) is NATIVE-ONLY; never promise it for CSI. The reverse trade is that CSI gives up that transparent auto-rollout."
     }
   ]
 }
