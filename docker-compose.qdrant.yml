@@ -1,0 +1,25 @@
+# Local-only Qdrant for HAL Plus RAG development.
+#
+# This stands up a single Qdrant node for iterating on the qdrant retrieval
+# backend WITHOUT baking a corpus snapshot image (that is a later CI/release
+# step). The collection is populated by `npm run push-to-qdrant`.
+#
+#   npm run qdrant:up      # start (detached)
+#   npm run push-to-qdrant # ingest the on-disk corpus
+#   npm run qdrant:down    # stop + keep volume
+#
+# Pin matches the reference implementation (mind-the-gap feature/qdrant-poc)
+# so behaviour is identical across both products.
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: hal-plus-qdrant
+    ports:
+      - "6333:6333" # REST + dashboard (http://localhost:6333/dashboard)
+      - "6334:6334" # gRPC
+    volumes:
+      - hal_plus_qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  hal_plus_qdrant_storage:

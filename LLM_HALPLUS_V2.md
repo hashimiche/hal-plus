@@ -430,6 +430,83 @@ _Append-only. Date each entry. Record decisions, discoveries, and step completio
   vault → vault pki enable; statusTools resolve to [get_vault_status, get_vault_pki_status]. Corpus for
   PKI still thin → Under-the-hood/Learn-more degrade gracefully until Qdrant track (#1).
 
+- **2026-06-01** — **Qdrant retrieval LOCAL-FIRST slice BUILT (roadmap #1 / A2 first increment) —
+  awaiting user local test before any push/tag.** Stood up an optional, opt-in Qdrant backend that
+  defaults OFF so nothing breaks. New hal-plus files: `docker-compose.qdrant.yml`
+  (`qdrant/qdrant:v1.13.6`, 6333/6334, named volume `hal_plus_qdrant_storage`), `server/qdrant-client.mjs`
+  (dependency-free REST client; 768-dim Cosine; `md5(chunkId)→UUID` idempotent ids; ensures **keyword
+  payload indexes on `product` + `source_type`**; `deriveSourceType(href)` → docs|tutorial|validated-design|
+  validated-pattern|video; ensureCollection/upsert/search/scroll/ping), `scripts/push-to-qdrant.mjs`
+  (loads the on-disk MiniSearch corpus `.hal-plus-cache/doc-search/<product>/chunks.json`, embeds via
+  Ollama `/api/embed` `nomic-embed-text`, incremental skip via scroll, `--recreate`/`--product`),
+  `scripts/wait-for-qdrant.mjs`, `.env.example`. Edited `server/doc-search.mjs`: added `retrieveViaQdrant()`
+  (ping → embed query → `points/search` filtered by `product` → min-score floor `HAL_RAG_QDRANT_MIN_SCORE`
+  (0.4) → per-source-page diversity cap `HAL_RAG_QDRANT_MAX_PER_PAGE` (2)); `retrieveDocsForPrompt` now
+  dispatches on `HAL_RAG_BACKEND` (`local` default | `qdrant`). **Key design fix:** the qdrant path is
+  self-sufficient and **never triggers a local corpus crawl** — `ensureCorpus` runs only on the local /
+  fallback path, so qdrant mode returns fast even when the on-disk corpus is stale. Graceful fallback to
+  local on ping-fail/empty (`state?.chunkMap` guarded since `state` may be undefined in qdrant mode).
+  npm scripts `qdrant:up`/`qdrant:down`/`push-to-qdrant`/`dev:qdrant` — **use `podman compose`, NOT
+  `docker`** (`docker` is a zsh alias for podman, unavailable to npm's `sh`). **Validated locally:**
+  container up, **13354 points** pushed (terraform 5341 + vault 8013), product+source_type filters
+  confirmed via curl; end-to-end `mode:"qdrant"` returns 6 product-filtered chunks fast for both a vault
+  PKI and a terraform VCS query; fallback ping-guard returns false quickly when Qdrant is down;
+  `node --check` + `npx tsc --noEmit` clean. **Known limitation:** pure-dense (no lexical) relevance can
+  drift (PKI query surfaced KMIP/Azure top-scoring) — hybrid sparse+dense or BM25 prefilter is a
+  follow-up, not this slice. **DEFERRED (per user, test locally first):** CI corpus pipeline +
+  `ghcr.io/hashimiche/hal-plus-qdrant:<tag>` baked-snapshot image, git tags, wiring into `hal plus create`,
+  and source-type corpus diversity (validated-design/pattern/video + Nomad/Consul/Boundary roots).
+  Docs synced: `design_doc_search.md` Retrieval-backends section. No hal-repo changes in this slice.
+
+- **2026-06-01** — **Intent-routing miss FIXED — generic "secure secrets in my k8s pod" now routes to
+  `vso-csi`.** User reported the question *"I want secure secrets in my kubernetes' pod"* produced a
+  100% ungrounded Gemma answer (recommended External Secrets Operator / AWS/GCP managers — none of the
+  HAL/Vault VSO path). Root cause: `scoreScenarioMatch` is pure **substring `includes`** matching; the
+  prompt contained none of the `vso-csi` intent phrases (closest was "secrets into my kubernetes pods" —
+  "into"+plural vs the user's "in"+singular), so it fell through to the generic route. Fix: broadened
+  `shapes/vso-csi.md` `intent.any` with the generic class ("secure secrets in my kubernetes", "secure
+  k8s secrets", "secrets in my kubernetes pod", "get secrets into a pod", "deliver a secret to my pod",
+  "secrets management in kubernetes", etc.). Validated: the exact failing prompt + 5 variants → vso-csi;
+  dynamic-secrets / pki-certificates / vcs-driven-workflow routing unaffected. **Strategic note:** this
+  is the inherent fragility of substring intent matching — every slightly-reworded on-topic question is
+  a potential miss. The durable fix is **semantic intent routing** (embed the prompt, nearest-neighbor
+  against per-shape exemplar embeddings) reusing the Qdrant/`nomic-embed-text` infra just built — a
+  follow-up once the local retrieval slice is accepted.
+
+- **2026-06-01** — **Chat UX polish — follow-up strip relocated + question copy/edit-regenerate.** Two
+  user-requested front-end-only changes (`src/App.tsx` + `src/styles.css`; no server/MCP/corpus work).
+  (1) **Related-questions follow-ups** moved out of every assistant bubble into a single detached strip
+  (`.followup-strip`, labelled "Related") rendered **once, directly under the latest answer card** (via
+  a `latestAssistantMessage` memo) and hidden while streaming. Suggestions were **tightened client-side**
+  against the catalog sample prompts: prefer the matched product's **subcommand-level** prompts and
+  exclude every question **already asked** in the conversation (new `askedPrompts` set), so chips stay
+  on-topic and forward-looking instead of echoing prior turns. (2) **User questions** gained hover
+  affordances in the message head: a copy button (reuses `CopyAnswerButton`) and an **Edit** button
+  (`.answer-edit-btn`). Editing swaps the bubble for an inline textarea (`.msg-edit`; Enter saves,
+  Shift+Enter newline, Esc cancels) with Cancel / "Save & regenerate"; saving **truncates the
+  conversation at that question** (drops its old answer + every later turn) and regenerates from the
+  edited prompt — matching mainstream chat clients. **Supporting refactor:** `sendPrompt(rawPrompt,
+  baseMessages?, { force })` now takes an explicit base history (avoids the stale-`messages` closure on
+  edit) and force-aborts any in-flight stream; `setIsSending(false)` moved **inside** the
+  controller-match guard in `finally` so an aborted old request can't flip the sending state off while
+  the regenerated request is still streaming. Validated: `npx tsc -p tsconfig.json --noEmit` clean; no
+  lint/type errors. UX_PARITY.md §3D updated to reflect both. Front-end only; uncommitted on
+  `feature/halplus-v2`.
+
+- **2026-06-01** — **Command-grounding corpus fix — invalid `--force` removed, Vault auth verbs
+  normalized to positional.** Triggered by a near-perfect live JWT answer that emitted
+  `hal vault jwt --enable`; tracing it back exposed two latent corpus defects, not a model
+  hallucination. (1) `llm/products/vault/jwt.md` and `k8s.md` both listed a `hal vault <sub> --force`
+  action command, but **neither `cmd/vault/jwt.go` nor `cmd/vault/k8s.go` registers a `--force` flag**
+  (only `enable/-e`, `disable/-d`, `update/-u`; for `k8s`, `--enable` is even `MarkHidden`) — so those
+  were **broken commands the LLM could emit verbatim**. Removed them. (2) Normalized every Vault auth
+  behavior file to the **canonical positional lifecycle verb** (`hal vault jwt enable`, `hal vault k8s
+  enable [--csi]`, `hal vault oidc enable`) — matching the `Use: "<sub> [status|enable|disable|update]"`
+  strings and the already-positional `database`/`ldap` files — across `actionCommands`, `notes`, and
+  prose in `jwt.md`, `k8s.md`, `oidc.md`. The legacy `--enable` flag still works (it's registered) but
+  is no longer advertised. All three `hal-plus-spec` JSON blocks re-validated (`JSON.parse` OK). Corpus
+  only; uncommitted on `feature/halplus-v2`.
+
 ---
 
 ## 7. Open Questions / TODO

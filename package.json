@@ -11,7 +11,11 @@
     "dev:api": "node --watch server/index.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "start": "node server/index.mjs"
+    "start": "node server/index.mjs",
+    "qdrant:up": "podman compose -f docker-compose.qdrant.yml up -d && node scripts/wait-for-qdrant.mjs",
+    "qdrant:down": "podman compose -f docker-compose.qdrant.yml down",
+    "push-to-qdrant": "node scripts/push-to-qdrant.mjs",
+    "dev:qdrant": "HAL_RAG_BACKEND=qdrant npm run dev"
   },
   "dependencies": {
     "concurrently": "^9.0.1",

@@ -19,11 +19,23 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import MiniSearch from "minisearch";
+import {
+  ping as qdrantPing,
+  searchPoints as qdrantSearch,
+  matchFilter,
+} from "./qdrant-client.mjs";
 
 // Configuration
 
 const DOC_SEARCH_ENABLED =
   String(process.env.HAL_DOC_SEARCH_ENABLED || "true").toLowerCase() !== "false";
+
+// Retrieval backend: "local" (MiniSearch BM25 + Ollama rerank, default) or
+// "qdrant" (vector search against a pre-pushed Qdrant collection). The qdrant
+// path degrades gracefully to local if Qdrant is unreachable or returns nothing.
+const RAG_BACKEND = String(process.env.HAL_RAG_BACKEND || "local").toLowerCase();
+const RAG_QDRANT_MIN_SCORE = Number(process.env.HAL_RAG_QDRANT_MIN_SCORE || 0.4);
+const RAG_QDRANT_MAX_PER_PAGE = Number(process.env.HAL_RAG_QDRANT_MAX_PER_PAGE || 2);
 const DOC_SEARCH_MODE = String(process.env.HAL_DOC_SEARCH_MODE || "hybrid").toLowerCase();
 const DOC_SEARCH_TOP_N = Number(process.env.HAL_DOC_SEARCH_TOP_N || 20);
 const DOC_SEARCH_TOP_K = Number(process.env.HAL_DOC_SEARCH_TOP_K || 6);
@@ -695,7 +707,65 @@ async function rerankWithEmbeddings(query, chunks, ollamaBaseUrl) {
     .sort((a, b) => b.finalScore - a.finalScore);
 }
 
-// Payload helpers
+// Qdrant retrieval backend
+//
+// Embeds the query (same model + dimension as the local rerank path) and runs a
+// product-filtered vector search against the pre-pushed Qdrant collection. Applies
+// a minimum-score floor and a per-source-page diversity cap so a single doc page
+// cannot dominate the result set. Returns null on any failure / empty result so
+// the caller can fall back to the local backend.
+function qdrantHitToChunk(hit) {
+  const p = hit?.payload || {};
+  return {
+    id: p.id || String(hit?.id || ""),
+    product: p.product,
+    type: p.type || "text",
+    language: p.language || null,
+    kind: p.kind || "official",
+    href: p.href || "",
+    content: p.content || "",
+    sourceTitle: p.sourceTitle || "",
+    sectionTitle: p.sectionTitle || "",
+    headingPath: p.headingPath || "",
+    semanticScore: Number(hit?.score || 0),
+    finalScore: Number(hit?.score || 0),
+  };
+}
+
+async function retrieveViaQdrant(productId, query, ollamaBaseUrl) {
+  try {
+    if (!(await qdrantPing())) return null;
+
+    const embeddings = await embedTexts(ollamaBaseUrl, DOC_SEARCH_EMBED_MODEL, [query]);
+    const queryVec = Array.isArray(embeddings) ? embeddings[0] : null;
+    if (!Array.isArray(queryVec) || queryVec.length === 0) return null;
+
+    const hits = await qdrantSearch({
+      vector: queryVec,
+      filter: matchFilter({ product: productId }),
+      limit: DOC_SEARCH_TOP_K * 4,
+      scoreThreshold: RAG_QDRANT_MIN_SCORE,
+    });
+    if (!Array.isArray(hits) || hits.length === 0) return null;
+
+    // Per-source-page diversity cap, preserving score order.
+    const perPage = new Map();
+    const pool = [];
+    for (const hit of hits) {
+      const chunk = qdrantHitToChunk(hit);
+      const page = String(chunk.href || "").split("#")[0];
+      const count = perPage.get(page) || 0;
+      if (count >= RAG_QDRANT_MAX_PER_PAGE) continue;
+      perPage.set(page, count + 1);
+      pool.push(chunk);
+    }
+    return pool.length > 0 ? pool : null;
+  } catch (err) {
+    console.error(`[doc-search] qdrant retrieval failed, falling back to local: ${err?.message}`);
+    return null;
+  }
+}
+
 
 function trimSnippet(content, size) {
   const limit = size || 280;
@@ -799,36 +869,54 @@ export async function retrieveDocsForPrompt(prompt, context, options) {
     return { docs: [], chunks: [], mode: "no-prompt" };
   }
 
-  await ensureCorpus(productId);
-
-  const state = corpusState.get(productId);
-  if (!state) {
-    return { docs: [], chunks: [], mode: "corpus-unavailable" };
-  }
-
   const query = buildSearchQuery(opts.messages, prompt);
 
-  const lexical = searchCorpus(productId, query, DOC_SEARCH_TOP_N);
-  if (lexical.length === 0) {
-    return { docs: [], chunks: [], mode: "no-match" };
+  const ollamaBaseUrl = opts.ollamaBaseUrl || "http://127.0.0.1:11434";
+
+  // Backend selection. Qdrant is tried first when configured; it degrades to the
+  // local MiniSearch path on any failure/empty result so nothing breaks. The
+  // qdrant path is self-sufficient and does NOT trigger a local corpus crawl.
+  let reranked = null;
+  let mode = null;
+  let considered = 0;
+
+  if (RAG_BACKEND === "qdrant") {
+    const qChunks = await retrieveViaQdrant(productId, query, ollamaBaseUrl);
+    if (qChunks && qChunks.length > 0) {
+      reranked = qChunks;
+      mode = "qdrant";
+      considered = qChunks.length;
+    }
   }
 
-  const mode = DOC_SEARCH_MODE === "hybrid" ? "hybrid" : "lexical";
-  const reranked =
-    mode === "hybrid"
-      ? await rerankWithEmbeddings(
-          query,
-          lexical,
-          opts.ollamaBaseUrl || "http://127.0.0.1:11434"
-        )
-      : lexical;
+  // Local corpus is required for the local backend and for pinned-URL fallback.
+  // In qdrant mode we only reuse it if already loaded (never block on a crawl).
+  let state = corpusState.get(productId);
+
+  if (!reranked) {
+    await ensureCorpus(productId);
+    state = corpusState.get(productId);
+    if (!state) {
+      return { docs: [], chunks: [], mode: "corpus-unavailable" };
+    }
+    const lexical = searchCorpus(productId, query, DOC_SEARCH_TOP_N);
+    if (lexical.length === 0) {
+      return { docs: [], chunks: [], mode: "no-match" };
+    }
+    mode = DOC_SEARCH_MODE === "hybrid" ? "hybrid" : "lexical";
+    reranked =
+      mode === "hybrid"
+        ? await rerankWithEmbeddings(query, lexical, ollamaBaseUrl)
+        : lexical;
+    considered = lexical.length;
+  }
 
   const topChunks = reranked.slice(0, DOC_SEARCH_TOP_K);
 
   // Inject best-scoring chunk from each pinned base URL not already in topChunks.
   // Checks reranked candidates first; falls back to a full corpus scan.
   const pinnedBaseUrls = Array.isArray(opts.pinnedBaseUrls) ? opts.pinnedBaseUrls : [];
-  if (pinnedBaseUrls.length > 0 && state.chunkMap) {
+  if (pinnedBaseUrls.length > 0 && state?.chunkMap) {
     const representedBases = new Set(
       topChunks.map((c) => String(c.href || "").split("#")[0])
     );
@@ -877,8 +965,8 @@ export async function retrieveDocsForPrompt(prompt, context, options) {
     mode,
     debug: {
       product: productId,
-      corpusChunks: state.chunkMap.size,
-      considered: lexical.length,
+      corpusChunks: state?.chunkMap?.size ?? null,
+      considered,
       queryPreview: query.slice(0, 120),
     },
   };

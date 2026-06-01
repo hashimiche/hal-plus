@@ -9,12 +9,12 @@ This document is the source of truth for the doc search architecture implemented
 - Section-level retrieval precision: answers cite `href#anchor`, not just homepage URLs.
 - Conversation-driven: query is built from last 4 user turns, not just the current message.
 - MCP-independent: doc retrieval works regardless of which MCPs are connected.
-- Minimal footprint: no extra daemon. One Node process + one Ollama process + on-disk index files.
-- No vector database service.
+- Minimal footprint by default: one Node process + one Ollama process + on-disk index files; no mandatory extra daemon.
+- Optional Qdrant vector backend for corpus scale, opt-in and degrading gracefully to local.
 
 ## Non-Goals
 - Building a cloud-hosted RAG platform.
-- Adding mandatory remote dependencies for retrieval.
+- Making any remote dependency *mandatory* for retrieval (Qdrant is opt-in; local is the default and the fallback).
 - Replacing HAL MCP as runtime source of truth.
 
 ## Architecture
@@ -52,6 +52,39 @@ Server starts immediately. Corpus builds run in background — stale or missing 
 Modes:
 - `HAL_DOC_SEARCH_MODE=hybrid` (default): BM25 + embedding rerank
 - `HAL_DOC_SEARCH_MODE=lexical`: BM25 only (smaller footprint, lower precision)
+
+## Retrieval backends (`HAL_RAG_BACKEND`)
+Retrieval is pluggable. Both backends share the same crawl/chunking and the same
+embedder (`nomic-embed-text`, 768-dim), so they are vector-compatible.
+
+- **`local` (default)** — MiniSearch BM25 top-N → Ollama embedding rerank top-K.
+  No extra service. This is the dev default and the safety fallback.
+- **`qdrant`** — embed the query, run a product-filtered vector search against a
+  pre-pushed Qdrant collection, apply a min-score floor + per-source-page
+  diversity cap. Implemented in `retrieveViaQdrant` in `doc-search.mjs` via the
+  shared `server/qdrant-client.mjs` REST helper. If Qdrant is unreachable or
+  returns nothing, retrieval **silently falls back to the local path** so nothing
+  breaks.
+
+### Qdrant collection contract
+- Collection `hal-plus` (env `HAL_QDRANT_COLLECTION`).
+- Vectors `{ size: 768, distance: Cosine }`.
+- Keyword payload indexes on `product` and `source_type` for filtered search.
+- Point id = deterministic UUID from `md5(chunkId)` → idempotent re-ingest.
+- Payload carries the full chunk (content, href, headingPath, sourceTitle,
+  sectionTitle, type, language, kind) plus `product`, `source_type`
+  (`docs`/`tutorial`/… derived from href) and `source_page`.
+
+### Local Qdrant workflow (dev, pre-snapshot)
+```
+npm run qdrant:up        # podman compose -f docker-compose.qdrant.yml up -d (qdrant v1.13.6, 6333/6334)
+npm run push-to-qdrant   # embed on-disk corpus chunks → upsert (idempotent; --recreate / --product <id>)
+npm run dev:qdrant       # dev server with HAL_RAG_BACKEND=qdrant
+npm run qdrant:down
+```
+Ingest reuses the local on-disk corpus (`.hal-plus-cache/doc-search/<product>/chunks.json`)
+as the source of chunks, so the crawl runs once and feeds both backends. Baking a
+corpus snapshot image for release is a later step (not part of this slice).
 
 ## Product tree
 Defined in `PRODUCT_TREE` constant in `doc-search.mjs`. Currently:
