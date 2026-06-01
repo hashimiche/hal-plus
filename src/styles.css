@@ -825,6 +825,82 @@ body {
   font-size: 0.78rem;
 }
 
+/* Related-questions strip rendered directly under the latest answer card */
+.followup-strip {
+  margin: 14px 0 4px;
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent) 8%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.followup-strip .followup-row {
+  margin-top: 0;
+}
+
+.followup-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Edit affordance on a user question — matches the copy button styling */
+.answer-edit-btn {
+  cursor: pointer;
+}
+
+/* Inline editor for a user question */
+.msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msg-edit-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--panel) 94%, black 6%);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.94rem;
+  line-height: 1.5;
+}
+
+.msg-edit-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.msg-edit-save {
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+  color: var(--text);
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.msg-edit-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .composer {
   padding: 10px 12px;
   margin-top: auto;

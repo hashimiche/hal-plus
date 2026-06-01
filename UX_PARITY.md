@@ -76,6 +76,11 @@ Responsive behavior
 - Inline error message cards for failed requests.
 - Auto-scroll pause behavior with jump-to-latest control.
 - Per-code-block copy buttons (`.code-copy-btn`) and a whole-answer copy button (`.answer-copy-btn`, `CopyAnswerButton`) in the assistant message head; the answer button copies the full raw markdown and reveals on message hover.
+- User questions carry their own hover affordances in the message head: a copy button (reuses `CopyAnswerButton`) and an Edit button (`.answer-edit-btn`).
+  - Editing swaps the question bubble for an inline textarea (`.msg-edit`) with Cancel and "Save & regenerate" actions (Enter saves, Shift+Enter newlines, Esc cancels).
+  - Saving truncates the conversation at that question — dropping its old answer and every later turn — and regenerates from the edited prompt, aborting any in-flight stream first. This mirrors the edit-and-regenerate behavior of mainstream chat clients.
+- Related-question follow-ups render as a single detached strip (`.followup-strip`, labelled "Related") directly under the latest answer card only — not repeated inside every prior message — and are hidden while a response is streaming.
+  - Suggestions are tightened client-side against the catalog sample prompts: they prefer the matched product's subcommand-level prompts and exclude any question already asked in the conversation, so chips stay on-topic and forward-looking.
 
 ### E. Prompt Composer
 - Multi-line text input.
