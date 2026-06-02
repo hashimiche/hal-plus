@@ -83,8 +83,30 @@ npm run dev:qdrant       # dev server with HAL_RAG_BACKEND=qdrant
 npm run qdrant:down
 ```
 Ingest reuses the local on-disk corpus (`.hal-plus-cache/doc-search/<product>/chunks.json`)
-as the source of chunks, so the crawl runs once and feeds both backends. Baking a
-corpus snapshot image for release is a later step (not part of this slice).
+as the source of chunks, so the crawl runs once and feeds both backends.
+
+### Pre-seeded corpus image (`ghcr.io/hashimiche/hal-plus-qdrant`)
+For release / `hal plus create`, the seeded collection is baked into a container image
+so consumers never have to crawl or embed the corpus. **The image is built and published
+by CI in the dedicated `hal-plus-qdrant` repo, not from a laptop.** That pipeline pulls
+these build files from hal-plus at build time (sparse-checkout), so the schema contract
+never drifts:
+```
+node scripts/crawl-corpus.mjs        # crawl HashiCorp docs → .hal-plus-cache/doc-search/<product>/chunks.json
+npm run push-to-qdrant -- --recreate # embed chunks (nomic-embed-text) → upsert into a running Qdrant
+npm run qdrant:export                # scroll live Qdrant (payload + vectors) → .qdrant-build/seed.jsonl (NDJSON, gitignored)
+npm run qdrant:build-image           # replay seed into a throwaway qdrant on :6399, docker/podman commit → image
+```
+`build-qdrant-image.mjs` recreates the collection schema (768-dim Cosine, keyword
+payload indexes on `product` + `source_type`), upserts in batches of 256, verifies the
+point count, then `stop` + `commit`. Qdrant `v1.13.6` declares **no
+VOLUME** for `/qdrant/storage`, so the commit captures the seeded data. The export is
+decoupled from embedding (it reuses vectors already in Qdrant), so a per-arch bake
+never re-embeds — the CI crawls+embeds once, then bakes the same seed into both
+amd64 and arm64 images. The image is published monthly (cron) + on demand as
+`:latest` and a dated `:YYYY.MM.DD` tag. `hal plus create` (default `--rag qdrant`)
+pulls `:latest`, starts a `hal-qdrant` container on `hal-net`, and points HAL Plus at
+`http://hal-qdrant:6333`. See the `hal-plus-qdrant` repo for the workflow.
 
 ## Product tree
 Defined in `PRODUCT_TREE` constant in `doc-search.mjs`. Currently:

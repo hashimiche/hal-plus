@@ -609,6 +609,22 @@ export function initCorpus() {
   }
 }
 
+// Headless corpus build (CI / offline ingest)
+//
+// Unlike initCorpus(), this awaits a fresh crawl of every product and persists
+// chunks.json/index/manifest to disk. It is the entry point used by the
+// corpus-image pipeline (scripts/crawl-corpus.mjs) to populate the on-disk
+// corpus that push-to-qdrant.mjs then embeds and upserts into Qdrant.
+// Always forces a rebuild so scheduled runs pick up evolving docs.
+
+export async function buildAllCorpora() {
+  const productIds = Object.keys(PRODUCT_TREE);
+  for (const productId of productIds) {
+    await buildCorpus(productId);
+  }
+  return productIds;
+}
+
 // Query helpers
 //
 // Incorporate the last few conversation turns so document retrieval

@@ -15,6 +15,9 @@
     "qdrant:up": "podman compose -f docker-compose.qdrant.yml up -d && node scripts/wait-for-qdrant.mjs",
     "qdrant:down": "podman compose -f docker-compose.qdrant.yml down",
     "push-to-qdrant": "node scripts/push-to-qdrant.mjs",
+    "corpus:crawl": "node scripts/crawl-corpus.mjs",
+    "qdrant:export": "node scripts/export-qdrant-seed.mjs",
+    "qdrant:build-image": "node scripts/build-qdrant-image.mjs",
     "dev:qdrant": "HAL_RAG_BACKEND=qdrant npm run dev"
   },
   "dependencies": {
