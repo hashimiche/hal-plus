@@ -108,12 +108,29 @@ amd64 and arm64 images. The image is published monthly (cron) + on demand as
 pulls `:latest`, starts a `hal-qdrant` container on `hal-net`, and points HAL Plus at
 `http://hal-qdrant:6333`. See the `hal-plus-qdrant` repo for the workflow.
 
+**CI runtime optimizations** (crawl+embed is the long pole — minutes per product):
+- **Per-product fan-out.** The workflow enumerates products via
+  `node scripts/crawl-corpus.mjs --list` (driven by `listCorpusProducts()` →
+  `PRODUCT_TREE`) and runs one crawl+embed `seed` job per product in a matrix.
+  Wall-clock collapses to the slowest single product; a `merge-seed` job
+  concatenates the shards before the bake.
+- **Embedding cache.** `push-to-qdrant.mjs` honours `HAL_EMBED_CACHE` (NDJSON,
+  `{"k":md5(model+text),"v":[…]}` per line). When set, unchanged chunks are
+  served from cache and only new/changed chunks hit Ollama. CI restores/saves it
+  per product via `actions/cache` (unique key per run + `restore-keys` prefix),
+  so steady-state monthly runs embed almost nothing. Local runs leave
+  `HAL_EMBED_CACHE` unset → unaffected.
+- `crawl-corpus.mjs` accepts `--product <id>` (single product) and `--list`
+  (print product ids); `buildCorpora(ids?)` / `listCorpusProducts()` back these.
+
 ## Product tree
 Defined in `PRODUCT_TREE` constant in `doc-search.mjs`. Currently:
-- **terraform**: roots at `/terraform/enterprise` + `/terraform/cloud-docs`, depth 2, max 300 pages
-- **vault**: roots at `/vault/docs` + `/vault/tutorials`, depth 2, max 300 pages
+- **terraform**: roots at `/terraform/enterprise` + `/terraform/cloud-docs`, depth 2, max 300 pages.
+  Plus explicit deep seeds for the run-workflow pages (`/cloud-docs/workspaces/run/{api,cli,ui,remote-operations,modes-and-options}`) — these live at depth 3, beyond the crawl depth, but are the authoritative pages for the VCS/CLI/API-driven workflow scenarios. Without them, retrieval for "CLI/API-driven workflow" drifts to tangential pages (GitHub Actions, run-tasks) and the scenario engine falls back to the bare product root for links.
+- **vault**: roots at `/vault/docs` + `/vault/tutorials`, depth 2, max 300 pages, plus explicit deep auth/secrets/audit seeds.
 
 To add a product (e.g. Nomad, Consul, Boundary): add an entry to `PRODUCT_TREE`. No other changes needed.
+Seeds added to `roots` are crawled directly regardless of depth — use them for authoritative deep pages that nav links don't reliably reach within `depth`.
 
 ## MCP relationship
 - MCP owns: live runtime truth — current commands, endpoints, runtime state.
