@@ -9,12 +9,12 @@ This document is the source of truth for the doc search architecture implemented
 - Section-level retrieval precision: answers cite `href#anchor`, not just homepage URLs.
 - Conversation-driven: query is built from last 4 user turns, not just the current message.
 - MCP-independent: doc retrieval works regardless of which MCPs are connected.
-- Minimal footprint: no extra daemon. One Node process + one Ollama process + on-disk index files.
-- No vector database service.
+- Minimal footprint by default: one Node process + one Ollama process + on-disk index files; no mandatory extra daemon.
+- Optional Qdrant vector backend for corpus scale, opt-in and degrading gracefully to local.
 
 ## Non-Goals
 - Building a cloud-hosted RAG platform.
-- Adding mandatory remote dependencies for retrieval.
+- Making any remote dependency *mandatory* for retrieval (Qdrant is opt-in; local is the default and the fallback).
 - Replacing HAL MCP as runtime source of truth.
 
 ## Architecture
@@ -52,6 +52,61 @@ Server starts immediately. Corpus builds run in background — stale or missing 
 Modes:
 - `HAL_DOC_SEARCH_MODE=hybrid` (default): BM25 + embedding rerank
 - `HAL_DOC_SEARCH_MODE=lexical`: BM25 only (smaller footprint, lower precision)
+
+## Retrieval backends (`HAL_RAG_BACKEND`)
+Retrieval is pluggable. Both backends share the same crawl/chunking and the same
+embedder (`nomic-embed-text`, 768-dim), so they are vector-compatible.
+
+- **`local` (default)** — MiniSearch BM25 top-N → Ollama embedding rerank top-K.
+  No extra service. This is the dev default and the safety fallback.
+- **`qdrant`** — embed the query, run a product-filtered vector search against a
+  pre-pushed Qdrant collection, apply a min-score floor + per-source-page
+  diversity cap. Implemented in `retrieveViaQdrant` in `doc-search.mjs` via the
+  shared `server/qdrant-client.mjs` REST helper. If Qdrant is unreachable or
+  returns nothing, retrieval **silently falls back to the local path** so nothing
+  breaks.
+
+### Qdrant collection contract
+- Collection `hal-plus` (env `HAL_QDRANT_COLLECTION`).
+- Vectors `{ size: 768, distance: Cosine }`.
+- Keyword payload indexes on `product` and `source_type` for filtered search.
+- Point id = deterministic UUID from `md5(chunkId)` → idempotent re-ingest.
+- Payload carries the full chunk (content, href, headingPath, sourceTitle,
+  sectionTitle, type, language, kind) plus `product`, `source_type`
+  (`docs`/`tutorial`/… derived from href) and `source_page`.
+
+### Local Qdrant workflow (dev, pre-snapshot)
+```
+npm run qdrant:up        # podman compose -f docker-compose.qdrant.yml up -d (qdrant v1.13.6, 6333/6334)
+npm run push-to-qdrant   # embed on-disk corpus chunks → upsert (idempotent; --recreate / --product <id>)
+npm run dev:qdrant       # dev server with HAL_RAG_BACKEND=qdrant
+npm run qdrant:down
+```
+Ingest reuses the local on-disk corpus (`.hal-plus-cache/doc-search/<product>/chunks.json`)
+as the source of chunks, so the crawl runs once and feeds both backends.
+
+### Pre-seeded corpus image (`ghcr.io/hashimiche/hal-plus-qdrant`)
+For release / `hal plus create`, the seeded collection is baked into a container image
+so consumers never have to crawl or embed the corpus. **The image is built and published
+by CI in the dedicated `hal-plus-qdrant` repo, not from a laptop.** That pipeline pulls
+these build files from hal-plus at build time (sparse-checkout), so the schema contract
+never drifts:
+```
+node scripts/crawl-corpus.mjs        # crawl HashiCorp docs → .hal-plus-cache/doc-search/<product>/chunks.json
+npm run push-to-qdrant -- --recreate # embed chunks (nomic-embed-text) → upsert into a running Qdrant
+npm run qdrant:export                # scroll live Qdrant (payload + vectors) → .qdrant-build/seed.jsonl (NDJSON, gitignored)
+npm run qdrant:build-image           # replay seed into a throwaway qdrant on :6399, docker/podman commit → image
+```
+`build-qdrant-image.mjs` recreates the collection schema (768-dim Cosine, keyword
+payload indexes on `product` + `source_type`), upserts in batches of 256, verifies the
+point count, then `stop` + `commit`. Qdrant `v1.13.6` declares **no
+VOLUME** for `/qdrant/storage`, so the commit captures the seeded data. The export is
+decoupled from embedding (it reuses vectors already in Qdrant), so a per-arch bake
+never re-embeds — the CI crawls+embeds once, then bakes the same seed into both
+amd64 and arm64 images. The image is published monthly (cron) + on demand as
+`:latest` and a dated `:YYYY.MM.DD` tag. `hal plus create` (default `--rag qdrant`)
+pulls `:latest`, starts a `hal-qdrant` container on `hal-net`, and points HAL Plus at
+`http://hal-qdrant:6333`. See the `hal-plus-qdrant` repo for the workflow.
 
 ## Product tree
 Defined in `PRODUCT_TREE` constant in `doc-search.mjs`. Currently:

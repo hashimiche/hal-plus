@@ -37,6 +37,15 @@ body {
     radial-gradient(circle at 80% 12%, rgba(35, 154, 179, 0.18), transparent 26%),
     linear-gradient(135deg, rgba(255, 255, 255, 0.35), transparent 55%),
     var(--bg);
+  transition: background 220ms ease, color 220ms ease;
+}
+
+/* Smoothly fade panels, text and borders when the theme toggles. */
+.app-shell .panel,
+.app-shell .health-chip,
+.app-shell .chat-msg,
+.app-shell textarea {
+  transition: background-color 220ms ease, background 220ms ease, border-color 220ms ease, color 220ms ease;
 }
 
 .app-shell.has-docs {
@@ -533,6 +542,37 @@ body {
   color: var(--muted);
 }
 
+.msg-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.answer-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 86%, black 14%);
+  opacity: 0.65;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.chat-msg:hover .answer-copy-btn {
+  opacity: 1;
+}
+
+.answer-copy-btn:hover {
+  color: var(--text);
+  opacity: 1;
+}
+
 .msg-markdown {
   font-size: 0.94rem;
   line-height: 1.55;
@@ -785,6 +825,82 @@ body {
   font-size: 0.78rem;
 }
 
+/* Related-questions strip rendered directly under the latest answer card */
+.followup-strip {
+  margin: 14px 0 4px;
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent) 8%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.followup-strip .followup-row {
+  margin-top: 0;
+}
+
+.followup-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Edit affordance on a user question — matches the copy button styling */
+.answer-edit-btn {
+  cursor: pointer;
+}
+
+/* Inline editor for a user question */
+.msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msg-edit-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--panel) 94%, black 6%);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.94rem;
+  line-height: 1.5;
+}
+
+.msg-edit-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.msg-edit-save {
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+  color: var(--text);
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.msg-edit-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .composer {
   padding: 10px 12px;
   margin-top: auto;
@@ -817,7 +933,7 @@ body {
 .composer textarea {
   width: 100%;
   border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel) 82%, black 18%);
+  background: color-mix(in srgb, var(--panel) 93%, black 7%);
   color: var(--text);
   border-radius: 18px;
   padding: 10px 12px;
@@ -831,6 +947,10 @@ body {
   display: flex;
   justify-content: space-between;
   gap: 8px;
+}
+
+.composer-actions button[type="submit"] {
+  background: color-mix(in srgb, var(--panel) 93%, black 7%);
 }
 
 button {
@@ -862,26 +982,101 @@ button.stop-btn {
   padding: 7px 11px;
 }
 
-.theme-switcher-inline {
-  padding: 3px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.84rem;
+/* Cute sun/moon slider toggle (adapted from the mind-the-gap design). */
+.theme-switch {
+  position: relative;
+  display: inline-block;
+  width: 54px;
+  height: 30px;
+  flex: none;
 }
 
-.theme-switcher-inline a {
-  text-decoration: none;
-  color: var(--text);
+.theme-switch .theme-switch-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.theme-switch .theme-switch-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: linear-gradient(160deg, var(--panel) 0%, var(--panel-2) 100%);
+  transition: 0.3s;
+  border-radius: 30px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 5px 12px;
 }
 
-.theme-switcher-inline a.active {
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  border-color: transparent;
+.theme-switch .theme-switch-slider:before {
+  position: absolute;
+  content: "";
+  height: 24px;
+  width: 24px;
+  border-radius: 20px;
+  left: 2px;
+  bottom: 2px;
+  z-index: 2;
+  background-color: var(--bg);
+  transition: 0.3s;
+}
+
+.theme-switch .theme-switch-sun svg {
+  position: absolute;
+  top: 6px;
+  left: 31px;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  animation: theme-switch-rotate 15s linear infinite;
+}
+
+.theme-switch .theme-switch-moon svg {
+  fill: var(--muted);
+  position: absolute;
+  top: 6px;
+  left: 5px;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  animation: theme-switch-tilt 5s linear infinite;
+}
+
+@keyframes theme-switch-rotate {
+  0% {
+    transform: rotate(0);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes theme-switch-tilt {
+  0% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-10deg);
+  }
+  75% {
+    transform: rotate(10deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+.theme-switch .theme-switch-input:checked + .theme-switch-slider {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.theme-switch .theme-switch-input:focus-visible + .theme-switch-slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-switch .theme-switch-input:checked + .theme-switch-slider:before {
+  transform: translateX(24px);
 }
 
 @keyframes docSlideIn {

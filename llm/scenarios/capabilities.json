@@ -1,0 +1,210 @@
+{
+  "$schema": "Capability graph for hal-plus scenario generation. See LLM_HALPLUS_V2.md §10.2.",
+  "version": 1,
+  "capabilities": [
+    {
+      "id": "tfe",
+      "kind": "product",
+      "label": "Terraform Enterprise",
+      "product": "terraform",
+      "behaviorId": "terraform_enterprise",
+      "provides": "A self-hosted Terraform Enterprise runtime (org/project/workspaces, remote runs).",
+      "dependsOn": [],
+      "action": "hal terraform create",
+      "statusTool": "get_tfe_status",
+      "manualTrigger": null,
+      "observable": {
+        "what": "The TFE web UI is reachable and the bootstrap org/project exist.",
+        "linkFrom": "tfe.workspace_url"
+      },
+      "access": {
+        "surfaces": ["tfe.workspace_url"],
+        "credentials": ["lab_credentials.tfe_admin"]
+      },
+      "sourceTags": { "product": "terraform", "feature": "enterprise" },
+      "notes": "Primary target = container hal-tfe at https://tfe.localhost:8443, org hal, project Dave."
+    },
+    {
+      "id": "gitlab",
+      "kind": "integration",
+      "label": "GitLab CE (lab VCS host)",
+      "product": "terraform",
+      "behaviorId": null,
+      "provides": "A local GitLab CE instance hosting the demo repo that TFE links to via VCS.",
+      "dependsOn": [],
+      "action": "hal terraform vcs-workflow enable",
+      "statusTool": "get_tfe_vcs_workflow_status",
+      "manualTrigger": null,
+      "observable": {
+        "what": "The GitLab project (root/tfe-agent-demo) is reachable with main.tf + .gitlab-ci.yml seeded.",
+        "linkFrom": "gitlab.web_url"
+      },
+      "access": {
+        "surfaces": ["gitlab.web_url"],
+        "credentials": ["lab_credentials.gitlab"]
+      },
+      "sourceTags": { "product": "terraform", "feature": "vcs-workflow" },
+      "notes": "Bootstrapped as a side effect of the vcs-workflow command; not a standalone hal product. GitLab CE 18.10.1 at http://127.0.0.1:8080, login root / hal9000FTW."
+    },
+    {
+      "id": "tfe_vcs_workflow",
+      "kind": "feature",
+      "label": "Terraform VCS-driven workflow",
+      "product": "terraform",
+      "behaviorId": "terraform_workspace",
+      "provides": "VCS-driven auto-apply of Terraform runs: a commit to the GitLab repo triggers a TFE run.",
+      "dependsOn": ["tfe", "gitlab"],
+      "action": "hal terraform vcs-workflow enable",
+      "statusTool": "get_tfe_vcs_workflow_status",
+      "manualTrigger": "Push a commit to the main branch of the GitLab repo (root/tfe-agent-demo).",
+      "observable": {
+        "what": "GitLab fires a webhook to TFE, which queues and auto-applies a run; the latest run appears at the top of the workspace runs page.",
+        "linkFrom": "tfe.runs_url"
+      },
+      "access": {
+        "surfaces": ["gitlab.web_url", "tfe.workspace_url"],
+        "credentials": ["lab_credentials.gitlab", "lab_credentials.tfe_admin"]
+      },
+      "sourceTags": { "product": "terraform", "feature": "vcs-workflow" },
+      "notes": "Workspace auto-apply + execution-mode remote + queue-all-runs + vcs-repo linked on branch main. Twin target uses -bis names. See LLM_HALPLUS_V2.md §9."
+    },
+    {
+      "id": "tfe_api_workflow",
+      "kind": "feature",
+      "label": "Terraform API/CLI-driven workflow",
+      "product": "terraform",
+      "behaviorId": "terraform_cli",
+      "provides": "An ephemeral TFX API helper shell to drive TFE runs via the API/CLI instead of a VCS repo.",
+      "dependsOn": ["tfe"],
+      "action": "hal terraform api-workflow enable",
+      "statusTool": "get_tfe_api_workflow_status",
+      "manualTrigger": "From the helper shell, drive workspaces and queue runs with tfx / the TFE API.",
+      "observable": {
+        "what": "Runs appear in the TFE workspace, queued via the API/CLI rather than a VCS webhook.",
+        "linkFrom": null
+      },
+      "access": {
+        "surfaces": ["tfe.workspace_url"],
+        "credentials": ["lab_credentials.tfe_admin"]
+      },
+      "sourceTags": { "product": "terraform", "feature": "api-workflow" },
+      "notes": "Builds/runs the ephemeral helper container hal-tfe-api (image hal-tfe-api:latest, base ghcr.io/straubt1/tfx:latest) and drops into a shell. Alias: api. statusTool shares its handler with get_tfe_cli_status and returns TEXT status (no structured payload) -> observable.linkFrom is null; the tfe.* dotted paths in access come from the dependsOn tfe node's get_tfe_status."
+    },
+    {
+      "id": "vault",
+      "kind": "product",
+      "label": "HashiCorp Vault",
+      "product": "vault",
+      "behaviorId": "vault_product",
+      "provides": "A running Vault instance (secrets engines, auth methods, policies).",
+      "dependsOn": [],
+      "action": "hal vault create",
+      "statusTool": "get_vault_status",
+      "manualTrigger": null,
+      "observable": {
+        "what": "The Vault API is reachable and unsealed.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "vault", "feature": "core" },
+      "notes": "Container hal-vault; root token surfaced by the CLI. statusTool returns TEXT status (not a structured payload), so no dotted-path linkFrom."
+    },
+    {
+      "id": "vault_database",
+      "kind": "feature",
+      "label": "Vault dynamic database credentials",
+      "product": "vault",
+      "behaviorId": "vault_database",
+      "provides": "On-demand, short-lived database credentials minted by Vault (no static DB passwords).",
+      "dependsOn": ["vault"],
+      "action": "hal vault database enable",
+      "statusTool": "get_vault_database_status",
+      "manualTrigger": "Request a credential: vault read database/creds/dba-role",
+      "observable": {
+        "what": "Vault mints a just-in-time MariaDB username/password with a 2m default TTL (max 2h) that auto-revokes when the lease expires.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "vault", "feature": "database-secrets" },
+      "notes": "MariaDB container hal-vault-mariadb at mariadb.localhost:3306. Vault mounts database/ (mysql-database-plugin), rotates the vaultadmin root password, role dba-role default_ttl 2m / max_ttl 2h, revocation DROP USER. statusTool returns TEXT status (no structured payload)."
+    },
+    {
+      "id": "boundary",
+      "kind": "product",
+      "label": "HashiCorp Boundary",
+      "product": "boundary",
+      "behaviorId": null,
+      "provides": "A running Boundary controller/worker that brokers identity-based, least-exposure access to targets without distributing network or credential details to users.",
+      "dependsOn": [],
+      "action": "hal boundary create",
+      "statusTool": "get_boundary_status",
+      "manualTrigger": null,
+      "observable": {
+        "what": "The Boundary controller API is reachable and the admin console responds.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "boundary", "feature": "core" },
+      "notes": "Container hal-boundary; admin/controller API at http://boundary.localhost:9200. statusTool returns TEXT status (no structured payload), so no dotted-path linkFrom."
+    },
+    {
+      "id": "boundary_mariadb",
+      "kind": "feature",
+      "label": "Boundary brokered database access (Vault dynamic credentials)",
+      "product": "boundary",
+      "behaviorId": null,
+      "provides": "Identity-based access to a MariaDB target where Boundary brokers short-lived credentials minted on demand by Vault's database secrets engine — the user authenticates as themselves and never sees a database password.",
+      "dependsOn": ["vault_database", "boundary"],
+      "action": "hal boundary mariadb enable --with-vault",
+      "statusTool": "get_boundary_mariadb_status",
+      "manualTrigger": "Authenticate to Boundary as dba-user, then open a brokered session to the target: (1) BOUNDARY_AUTHENTICATE_PASSWORD_PASSWORD=password boundary authenticate password -addr http://boundary.localhost:9200 -auth-method-id <lab-auth> -login-name dba-user, then (2) boundary connect mysql -addr http://boundary.localhost:9200 -target-id <mariadb-secure-access>.",
+      "observable": {
+        "what": "Boundary opens a session to the mariadb-secure-access target and injects a fresh, Vault-minted MySQL credential (role dba-role) into the connection. The credential is short-lived and auto-revokes when the Vault lease expires; no static database password is handed to the user.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "boundary", "feature": "brokered-credentials" },
+      "notes": "Requires `hal vault database enable` first (provides container hal-vault-mariadb + Vault role database/creds/dba-role). The --with-vault path attaches Boundary to the existing hal-vault-mariadb and runs linkBoundaryToVault(): writes Vault policy boundary-controller, mints an orphan 24h token, then in Boundary creates credential store hal-vault-store (type vault, address http://hal-vault:8200), credential library mariadb-dba-creds (type vault-generic, path database/creds/dba-role, http_method GET) and adds it as the brokered credential source on target mariadb-secure-access. Boundary scopes: org hal-academy / project db-infrastructure. Auth method lab-auth (password), account login dba-user / password, principal user 'DBA Admin', role dba-role. Target type tcp, default_port 3306, host mariadb-server -> hal-vault-mariadb. Controller at http://boundary.localhost:9200. NOTE: the plain `hal boundary mariadb enable` (without --with-vault) instead deploys a standalone hal-boundary-target-mariadb with a STATIC db user (admin/password) and no Vault brokering — only the --with-vault path tells the Vault-dynamic-credentials story. The lab wires a single DBA principal/role (no separate least-privilege 'regular user' role) and does not enable audit devices/session recording. statusTool returns TEXT status (no structured payload), so observable.linkFrom is null."
+    },
+    {
+      "id": "vault_k8s_vso",
+      "kind": "feature",
+      "label": "Vault Secrets Operator on Kubernetes (native sync vs CSI)",
+      "product": "vault",
+      "behaviorId": null,
+      "provides": "Vault as the source of truth for application secrets on Kubernetes: the Vault Secrets Operator (VSO) reconciles a Vault secret into a workload, either by syncing it to a native Kubernetes Secret (env var) or by projecting it through the CSI driver (mounted file) — the app never talks to Vault directly.",
+      "dependsOn": ["vault"],
+      "action": "hal vault k8s enable",
+      "altActions": ["hal vault k8s enable --csi"],
+      "statusTool": "get_k8s_integration_status",
+      "manualTrigger": "Native mode only: update the source secret in Vault (e.g. vault kv put kv-k8s/app1 <key>=<new-value>) and refresh the demo app — VSO re-syncs within refreshAfter (15s) and auto-rolls the pod.",
+      "observable": {
+        "what": "The demo app at http://web.localhost:8088 serves a value that originated in Vault and was delivered by VSO without the app calling Vault. In native mode, changing the value in Vault triggers a rolling restart (rolloutRestartTargets) of hal-web-backend; because hal-web-proxy fronts the backend (replicas 2, maxUnavailable 0, maxSurge 1) the reload is zero-downtime and transparent to the user. In CSI mode the value is projected as a mounted file with no native Kubernetes Secret and no auto-rollout.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "vault", "feature": "kubernetes-vso" },
+      "notes": "Action `hal vault k8s enable` brings up a KinD cluster (on hal-net), installs the Vault Secrets Operator via Helm into namespace vso, wires Vault auth (kubernetes/ native, or jwt-k8s/ OIDC with --jwt), and deploys a demo app exposed at http://web.localhost:8088 (service hal-web-proxy in namespace app1, fronting Deployment hal-web-backend). Requires kind + kubectl + helm on PATH. statusTool get_k8s_integration_status runs `hal vault k8s` (status) and returns TEXT status (KinD/VSO/auth/demo-mode), so observable.linkFrom is null. TWO DELIVERY MODES on the same command: (1) NATIVE (default) — VaultStaticSecret (mount kv-k8s, path app1, refreshAfter 15s) writes a real Kubernetes Secret hal-web-secret consumed as an env var, with rolloutRestartTargets -> Deployment hal-web-backend so a Vault value change auto-rolls the pod. (2) CSI (--csi) — secret is projected via csi.vso.hashicorp.com directly into the pod's (tmpfs/memory) volume as a file; NO Kubernetes Secret is created and there is NO rolloutRestartTargets auto-rollout. ENTERPRISE GATE: --csi requires Vault Enterprise (isVaultEnterprise checks health.Version contains 'ent'; sets helm csi.enabled=true + CRD csisecrets.secrets.hashicorp.com). On Vault Community Edition, `--csi` is detected as unlicensed and SILENTLY DOWNGRADES to native sync (csiMode=false) — so the out-of-etcd CSI story is only available on Enterprise. SECURITY-TRADEOFF FRAMING (state precisely, do not overclaim): a native Kubernetes Secret is persisted in etcd base64-encoded and is only encrypted at rest if the cluster has etcd encryption-at-rest (KMS/aescbc) configured; it is visible via `kubectl get secret` under namespace RBAC, and env-var consumption can leak via process listings/crash dumps. CSI avoids this by NOT creating a persistent Secret object (file lives only in the pod's volume) — its advantage is 'not resident in etcd', NOT 'stronger encryption'. The auto-reload demo (refreshAfter + rolloutRestartTargets + transparent proxy) is NATIVE-ONLY; never promise it for CSI. The reverse trade is that CSI gives up that transparent auto-rollout."
+    },
+    {
+      "id": "vault_pki",
+      "kind": "feature",
+      "label": "Vault PKI — private CA with automated certificate issuance",
+      "product": "vault",
+      "behaviorId": null,
+      "provides": "Vault as a private Certificate Authority: a Root CA signs an Intermediate CA, and short-lived leaf certificates are issued on demand from the hal-role issuing role. Private keys never leave Vault. Two optional automation layers turn the CA into a working demo: cert-manager on Kubernetes (--k8s) issues and rotates leaf certs for a web pod, and an ACME/Caddy layer (--acme) auto-renews certs the way Let's Encrypt would.",
+      "dependsOn": ["vault"],
+      "action": "hal vault pki enable",
+      "altActions": ["hal vault pki enable --acme", "hal vault pki enable --k8s"],
+      "statusTool": "get_vault_pki_status",
+      "manualTrigger": "Issue a leaf certificate from the issuing role: vault write pki-int/issue/hal-role common_name=\"test.hal.local\" ttl=\"24h\". With --acme, Caddy requests + auto-renews its cert against Vault's ACME directory; with --k8s, cert-manager issues + rotates the Certificate for the web pod.",
+      "observable": {
+        "what": "Base: Vault returns a freshly minted certificate + chain for the requested common name, signed by the Intermediate CA, with the private key generated and held inside Vault. With --acme, the Caddy demo at https://acme.localhost:8090 serves a Vault-issued cert that auto-renews at ~1/3 of its 5m lifetime (visible live). With --k8s, the nginx web pod at https://pki.localhost:8089 serves a cert-manager-issued leaf cert backed by the Vault ClusterIssuer.",
+        "linkFrom": null
+      },
+      "access": { "surfaces": [], "credentials": [] },
+      "sourceTags": { "product": "vault", "feature": "pki" },
+      "notes": "Action `hal vault pki enable` mounts TWO PKI engines: pki-root (Root CA, default --root-ttl 43800h / 5y) and pki-int (Intermediate CA signed by the root, default --int-ttl 17520h / 2y). It creates issuing role hal-role (allowed_domains default \"hal.local,cluster.local,svc.cluster.local\", allow_subdomains, max_ttl 24h, rsa 2048), policy hal-pki-issuer, and config/urls (issuing_certificates + crl_distribution_points at http://vault.localhost:8200/v1/pki-int/...). PRIVATE KEYS NEVER LEAVE VAULT — clients receive only the signed cert + chain. The base command ALWAYS also enables Vault's built-in ACME endpoint on pki-int (pki-int/config/acme {enabled:true, max_ttl=--acme-cert-ttl default 5m} + pki-int/config/cluster), plus role acme-demo (ttl/max_ttl 5m, allow_any_name). Manual issue: vault write pki-int/issue/hal-role common_name=\"test.hal.local\" ttl=\"24h\". TWO OPTIONAL DEMO LAYERS (additive flags, both reuse a shared KinD cluster): (1) --acme (runPKIACMEEnable) deploys a Caddy pod hal-caddy-acme in namespace pki-acme-demo that uses Vault's built-in ACME directory (role acme-demo, 5m TTL) and AUTO-RENEWS at ~1/3 lifetime — the renewal is observable live at https://acme.localhost:8090 (images: --vault-pki-caddy-image default caddy:alpine, --vault-pki-web-backend-image default nginx:alpine). (2) --k8s deploys cert-manager via Helm (namespace cert-manager) onto the KinD cluster (--kind-node-image default kindest/node:v1.31.1), creates a ClusterIssuer vault-pki-issuer pointing at Vault's pki-int, and a Certificate hal-web-pki-cert in namespace pki-demo consumed by an nginx web pod (app=hal-web-pki) at https://pki.localhost:8089. Running with NO flags is status mode (prints engine/CA/role/cert-manager/ACME status as TEXT). statusTool get_vault_pki_status runs `hal vault pki` (status) and returns TEXT status, so observable.linkFrom is null. GROUNDING GUARDRAILS: never claim private keys are exported (they stay in Vault); --acme TTL is 5m with ~1/3-life auto-renew (do not invent longer TTLs); --k8s leaf certs come from cert-manager via the Vault ClusterIssuer (not minted directly by the app); both demo layers require their tooling on PATH (kind/kubectl/helm for --k8s)."
+    }
+  ]
+}

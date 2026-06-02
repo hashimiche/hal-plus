@@ -39,7 +39,7 @@
   "verifyCommands": [
     "hal status",
     "hal terraform status",
-    "curl -k -I https://tfe.localhost:8443/_health_check",
+    "curl -k -I https://tfe.localhost:8443/api/v1/health/readiness",
     "curl -k -I https://tfe.localhost:8443/app"
   ],
   "resources": [
@@ -63,7 +63,7 @@
   "notes": [
     "Status answers should stay concise and deterministic.",
     "If the stack is down, recommend hal terraform create after checking capacity and license prerequisites.",
-    "If the UI is unreachable but deploy supposedly finished, validate both _health_check and /app on https://tfe.localhost:8443."
+    "If the UI is unreachable but deploy supposedly finished, validate /api/v1/health/readiness on https://tfe.localhost:8443."
   ],
   "samplePrompts": [
     "Is TFE running?",

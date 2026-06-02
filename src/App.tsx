@@ -107,8 +107,8 @@ type MarkdownPreProps = ComponentPropsWithoutRef<"pre"> & {
 };
 
 const themeVersions: ThemeVersion[] = [
-  { className: "theme-light", label: "Studio", path: "/" },
-  { className: "theme-dark", label: "After Hours", path: "/dark" }
+  { className: "theme-light", label: "Light", path: "/" },
+  { className: "theme-dark", label: "Dark", path: "/dark" }
 ];
 
 const defaultProducts: HalProduct[] = [
@@ -120,8 +120,19 @@ const defaultProducts: HalProduct[] = [
   { name: "Observability", state: "unknown", endpoint: "no data", version: "n/a", features: [] }
 ];
 
-function getThemeFromPath(pathname: string): ThemeVersion {
-  return themeVersions.find((theme) => theme.path === pathname) ?? themeVersions[0];
+const THEME_STORAGE_KEY = "halplus.theme";
+
+function getInitialTheme(): ThemeVersion {
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    const match = themeVersions.find((theme) => theme.className === stored);
+    if (match) {
+      return match;
+    }
+  } catch {
+    // localStorage unavailable (e.g. private mode); fall through to path/default.
+  }
+  return themeVersions.find((theme) => theme.path === window.location.pathname) ?? themeVersions[0];
 }
 
 function nowTs(): string {
@@ -253,6 +264,37 @@ function MarkdownPreBlock({ children, mcpGrounded, mcpServer, behaviorTopic, ...
   );
 }
 
+function CopyAnswerButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const value = text.trim();
+    if (!value) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Ignore clipboard errors; the answer stays readable on screen.
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className="answer-copy-btn"
+      onClick={handleCopy}
+      aria-label="Copy answer"
+      title="Copy answer"
+    >
+      <span className="copy-icon" aria-hidden />
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -260,10 +302,20 @@ export default function App() {
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [catalog, setCatalog] = useState<BehaviorCatalog | null>(null);
   const [suggestionSeed, setSuggestionSeed] = useState(() => Math.floor(Math.random() * 100000));
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
   const formRef = useRef<HTMLFormElement>(null);
   const chatPanelRef = useRef<HTMLElement>(null);
   const activeChatRequestRef = useRef<AbortController | null>(null);
-  const theme = getThemeFromPath(window.location.pathname);
+  const [theme, setTheme] = useState<ThemeVersion>(getInitialTheme);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme.className);
+    } catch {
+      // Ignore persistence errors; theme still applies for the session.
+    }
+  }, [theme]);
 
   const estimatedTokens = useMemo(() => {
     const chars = messages.reduce((sum, message) => sum + message.text.length, 0) + input.length;
@@ -388,6 +440,14 @@ export default function App() {
     const products = catalog?.products || [];
     const result: Record<string, string[]> = {};
 
+    // Exclude anything the user has already asked in this conversation so the
+    // chips stay forward-looking and on-topic instead of echoing prior turns.
+    const askedPrompts = new Set(
+      messages
+        .filter((message) => message.role === "user")
+        .map((message) => message.text.trim().toLowerCase())
+    );
+
     const suggestionsForPrompt = (prompt: string): string[] => {
       const normalizedPrompt = String(prompt || "").trim();
       if (!normalizedPrompt) {
@@ -414,22 +474,25 @@ export default function App() {
         scoreTerms(normalizedPrompt, subcommand.matchTerms) > 0
       );
 
+      // Prefer prompts from the specific subcommand(s) the question touched —
+      // those are the most on-topic — then fall back to the product's prompts.
       const rawPool = [
-        ...(targetProduct.samplePrompts || []),
         ...(relevantSubcommands.length > 0
           ? relevantSubcommands.flatMap((subcommand) => subcommand.samplePrompts || [])
-          : targetProduct.subcommands.flatMap((subcommand) => subcommand.samplePrompts || []))
+          : targetProduct.subcommands.flatMap((subcommand) => subcommand.samplePrompts || [])),
+        ...(targetProduct.samplePrompts || [])
       ];
 
-      const suggestions = uniqueStrings(rawPool).filter(
-        (candidate) => candidate.toLowerCase() !== normalizedPrompt.toLowerCase()
-      );
+      const suggestions = uniqueStrings(rawPool).filter((candidate) => {
+        const lowered = candidate.toLowerCase();
+        return lowered !== normalizedPrompt.toLowerCase() && !askedPrompts.has(lowered);
+      });
 
       if (suggestions.length > 0) {
         return suggestions.slice(0, 3);
       }
 
-      return activeSuggestions.slice(0, 3);
+      return activeSuggestions.filter((candidate) => !askedPrompts.has(candidate.toLowerCase())).slice(0, 3);
     };
 
     let previousUserPrompt = "";
@@ -446,6 +509,15 @@ export default function App() {
 
     return result;
   }, [activeCatalogProduct, activeSuggestions, catalog?.products, messages]);
+
+  const latestAssistantMessage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "assistant" && messages[index].text.trim()) {
+        return messages[index];
+      }
+    }
+    return null;
+  }, [messages]);
 
 
   const healthChips: HealthChip[] = useMemo(
@@ -568,7 +640,7 @@ export default function App() {
           {missingTools.length > 0 ? (
             <div className="chip-overlay-tags">
               {missingTools.map((toolName) => (
-                <span key={toolName}>{toolName} missing</span>
+                <span key={toolName}>{toolName} not advertised</span>
               ))}
             </div>
           ) : null}
@@ -579,11 +651,22 @@ export default function App() {
     return null;
   };
 
-  const sendPrompt = async (rawPrompt: string) => {
+  const sendPrompt = async (rawPrompt: string, baseMessages?: Message[], opts?: { force?: boolean }) => {
     const prompt = rawPrompt.trim();
-    if (!prompt || isSending) {
+    if (!prompt) {
       return;
     }
+    if (isSending && !opts?.force) {
+      return;
+    }
+
+    // When regenerating (e.g. after editing a past question) abort whatever is
+    // currently streaming before starting the new request.
+    if (opts?.force) {
+      activeChatRequestRef.current?.abort();
+    }
+
+    const history = baseMessages ?? messages;
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -592,7 +675,7 @@ export default function App() {
       ts: nowTs()
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages([...history, userMessage]);
     setInput("");
     setIsSending(true);
     const requestController = new AbortController();
@@ -608,7 +691,7 @@ export default function App() {
     setMessages((prev) => [...prev, assistantMessage]);
 
     try {
-      const conversation = [...messages, userMessage].map((message) => ({ role: message.role, content: message.text }));
+      const conversation = [...history, userMessage].map((message) => ({ role: message.role, content: message.text }));
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -682,8 +765,8 @@ export default function App() {
     } finally {
       if (activeChatRequestRef.current === requestController) {
         activeChatRequestRef.current = null;
+        setIsSending(false);
       }
-      setIsSending(false);
     }
   };
 
@@ -694,6 +777,43 @@ export default function App() {
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     await sendPrompt(input);
+  };
+
+  const beginEdit = (message: Message) => {
+    setEditingId(message.id);
+    setEditingText(message.text);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditingText("");
+  };
+
+  const submitEdit = async (messageId: string) => {
+    const text = editingText.trim();
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0 || !text) {
+      cancelEdit();
+      return;
+    }
+
+    // Drop the edited question and everything after it (its old answer and any
+    // later turns), then regenerate from the edited prompt — stopping any
+    // in-flight stream in the process.
+    const base = messages.slice(0, index);
+    setEditingId(null);
+    setEditingText("");
+    await sendPrompt(text, base, { force: true });
+  };
+
+  const handleEditKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>, messageId: string) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void submitEdit(messageId);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelEdit();
+    }
   };
 
   const clearHistory = () => {
@@ -711,6 +831,8 @@ export default function App() {
     }
   };
 
+  const isDark = theme.className === "theme-dark";
+
   return (
     <div className={`app-shell ${theme.className} no-docs`}>
 
@@ -726,13 +848,37 @@ export default function App() {
               </div>
             </div>
 
-            <div className="theme-switcher-inline" aria-label="Theme mode">
-              {themeVersions.map((version) => (
-                <a key={version.path} href={version.path} className={version.path === theme.path ? "active" : ""}>
-                  {version.label}
-                </a>
-              ))}
-            </div>
+            <label
+              className="theme-switch"
+              aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+              title={isDark ? "Light mode" : "Dark mode"}
+            >
+              <span className="theme-switch-sun" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                  <g fill="#ffd43b">
+                    <circle r="5" cy="12" cx="12" />
+                    <path d="m21 13h-1a1 1 0 0 1 0-2h1a1 1 0 0 1 0 2zm-17 0h-1a1 1 0 0 1 0-2h1a1 1 0 0 1 0 2zm13.66-5.66a1 1 0 0 1 -.66-.29 1 1 0 0 1 0-1.41l.71-.71a1 1 0 1 1 1.41 1.41l-.71.71a1 1 0 0 1 -.75.29zm-12.02 12.02a1 1 0 0 1 -.71-.29 1 1 0 0 1 0-1.41l.71-.66a1 1 0 0 1 1.41 1.41l-.71.71a1 1 0 0 1 -.7.24zm6.36-14.36a1 1 0 0 1 -1-1v-1a1 1 0 0 1 2 0v1a1 1 0 0 1 -1 1zm0 17a1 1 0 0 1 -1-1v-1a1 1 0 0 1 2 0v1a1 1 0 0 1 -1 1zm-5.66-14.66a1 1 0 0 1 -.7-.29l-.71-.71a1 1 0 0 1 1.41-1.41l.71.71a1 1 0 0 1 0 1.41 1 1 0 0 1 -.71.29zm12.02 12.02a1 1 0 0 1 -.7-.29l-.66-.71a1 1 0 0 1 1.36-1.36l.71.71a1 1 0 0 1 0 1.41 1 1 0 0 1 -.71.24z" />
+                  </g>
+                </svg>
+              </span>
+              <span className="theme-switch-moon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512">
+                  <path d="m223.5 32c-123.5 0-223.5 100.3-223.5 224s100 224 223.5 224c60.6 0 115.5-24.2 155.8-63.4 5-4.9 6.3-12.5 3.1-18.7s-10.1-9.7-17-8.5c-9.8 1.7-19.8 2.6-30.1 2.6-96.9 0-175.5-78.8-175.5-176 0-65.8 36-123.1 89.3-153.3 6.1-3.5 9.2-10.5 7.7-17.3s-7.3-11.9-14.3-12.5c-6.3-.5-12.6-.8-19-.8z" />
+                </svg>
+              </span>
+              <input
+                type="checkbox"
+                className="theme-switch-input"
+                checked={isDark}
+                onChange={() =>
+                  setTheme(
+                    themeVersions.find((version) => version.className === (isDark ? "theme-light" : "theme-dark")) ??
+                      themeVersions[0]
+                  )
+                }
+              />
+              <span className="theme-switch-slider" />
+            </label>
           </div>
 
           <div className="chip-row health-row">
@@ -778,9 +924,50 @@ export default function App() {
                 <li key={message.id} className={`chat-msg ${message.role}`}>
                   <div className="msg-head">
                     <strong>{message.role === "user" ? "You" : "HAL+"}</strong>
-                    <span>{message.ts}</span>
+                    <span className="msg-head-right">
+                      <span>{message.ts}</span>
+                      {message.role === "assistant" && message.text.trim() ? (
+                        <CopyAnswerButton text={message.text} />
+                      ) : null}
+                      {message.role === "user" && editingId !== message.id ? (
+                        <>
+                          <CopyAnswerButton text={message.text} />
+                          <button
+                            type="button"
+                            className="answer-copy-btn answer-edit-btn"
+                            onClick={() => beginEdit(message)}
+                          >
+                            Edit
+                          </button>
+                        </>
+                      ) : null}
+                    </span>
                   </div>
-                  {message.role === "assistant" && message.text.trim() === "" ? (
+                  {message.role === "user" && editingId === message.id ? (
+                    <div className="msg-edit">
+                      <textarea
+                        className="msg-edit-input"
+                        value={editingText}
+                        onChange={(event) => setEditingText(event.target.value)}
+                        onKeyDown={(event) => handleEditKeyDown(event, message.id)}
+                        rows={3}
+                        autoFocus
+                      />
+                      <div className="msg-edit-actions">
+                        <button type="button" className="ghost" onClick={cancelEdit}>
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="msg-edit-save"
+                          onClick={() => void submitEdit(message.id)}
+                          disabled={!editingText.trim()}
+                        >
+                          Save &amp; regenerate
+                        </button>
+                      </div>
+                    </div>
+                  ) : message.role === "assistant" && message.text.trim() === "" ? (
                     <div className="thinking-inline">
                       <span>{loadingVerbForMessageId(message.id)}</span>
                       <span className="thinking-dots" aria-hidden>
@@ -788,41 +975,42 @@ export default function App() {
                       </span>
                     </div>
                   ) : (
-                    <>
-                      <div className="msg-markdown">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            code: MarkdownCodeBlock,
-                            pre: message.source === "hybrid"
-                              ? (preProps) => <MarkdownPreBlock {...preProps} mcpGrounded mcpServer={message.mcpServer} behaviorTopic={message.behaviorTopic} />
-                              : MarkdownPreBlock
-                          }}
-                        >
-                          {message.text}
-                        </ReactMarkdown>
-                      </div>
-                      {message.role === "assistant" && followUpSuggestionsByAssistantId[message.id]?.length ? (
-                        <div className="followup-row">
-                          {followUpSuggestionsByAssistantId[message.id].map((suggestion) => (
-                            <button
-                              key={`${message.id}-${suggestion}`}
-                              type="button"
-                              className="suggestion-chip followup-chip"
-                              onClick={() => void sendPrompt(suggestion)}
-                              disabled={isSending}
-                            >
-                              {suggestion}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </>
+                    <div className="msg-markdown">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          code: MarkdownCodeBlock,
+                          pre: message.source === "hybrid"
+                            ? (preProps) => <MarkdownPreBlock {...preProps} mcpGrounded mcpServer={message.mcpServer} behaviorTopic={message.behaviorTopic} />
+                            : MarkdownPreBlock
+                        }}
+                      >
+                        {message.text}
+                      </ReactMarkdown>
+                    </div>
                   )}
                 </li>
               ))}
             </ul>
           )}
+          {!isSending && latestAssistantMessage && followUpSuggestionsByAssistantId[latestAssistantMessage.id]?.length ? (
+            <div className="followup-strip">
+              <span className="followup-label">Related</span>
+              <div className="followup-row">
+                {followUpSuggestionsByAssistantId[latestAssistantMessage.id].map((suggestion) => (
+                  <button
+                    key={`followup-${suggestion}`}
+                    type="button"
+                    className="suggestion-chip followup-chip"
+                    onClick={() => void sendPrompt(suggestion)}
+                    disabled={isSending}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <form ref={formRef} className="composer" onSubmit={submit}>

@@ -27,3 +27,4 @@ pnpm-debug.log*
 *.pid
 *.pid.lock
 .hal-plus-cache/
+.qdrant-build/

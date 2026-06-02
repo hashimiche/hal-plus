@@ -38,7 +38,7 @@
   ],
   "verifyCommands": [
     "hal terraform status",
-    "curl -k -I https://tfe.localhost:8443/_health_check",
+    "curl -k -I https://tfe.localhost:8443/api/v1/health/readiness",
     "curl -k -I https://tfe.localhost:8443/app"
   ],
   "resources": [

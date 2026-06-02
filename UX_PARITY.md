@@ -55,10 +55,13 @@ Responsive behavior
 ### C. Header and Status Row (right panel)
 - Branding row with logo, product name, subtitle/tagline.
 - Theme switch and health chips are in the same compact top block as branding to maximize chat space.
+- Theme switch is client-side React state persisted in `localStorage` (`halplus.theme`); toggling does NOT navigate/reload, so the chat session is preserved.
+- Theme control is a single sun/moon slider toggle (`.theme-switch`, animated), not labelled buttons.
 - Status chips with hover detail popovers for:
   - Loki readiness
   - LLM runtime/model readiness
   - HAL MCP executable status
+    - Chip is ONLINE when MCP discovery succeeds (server reachable + `tools/list` returns). The lab runtime baseline (container-engine state) is a separate `runtimeOk` signal, and any advertised-but-missing tools are surfaced as an informational suffix only — they do NOT flip the chip red. The chip is only neutral/down when discovery itself is unavailable.
   - HAL product statuses (running/not deployed, endpoint, version, feature flags)
 - Token context chip appears in the same status row.
 - Runtime chips and product chips should be visually distinct but share one compact row contract.
@@ -72,6 +75,12 @@ Responsive behavior
 - Placeholder animation while waiting for streamed text.
 - Inline error message cards for failed requests.
 - Auto-scroll pause behavior with jump-to-latest control.
+- Per-code-block copy buttons (`.code-copy-btn`) and a whole-answer copy button (`.answer-copy-btn`, `CopyAnswerButton`) in the assistant message head; the answer button copies the full raw markdown and reveals on message hover.
+- User questions carry their own hover affordances in the message head: a copy button (reuses `CopyAnswerButton`) and an Edit button (`.answer-edit-btn`).
+  - Editing swaps the question bubble for an inline textarea (`.msg-edit`) with Cancel and "Save & regenerate" actions (Enter saves, Shift+Enter newlines, Esc cancels).
+  - Saving truncates the conversation at that question — dropping its old answer and every later turn — and regenerates from the edited prompt, aborting any in-flight stream first. This mirrors the edit-and-regenerate behavior of mainstream chat clients.
+- Related-question follow-ups render as a single detached strip (`.followup-strip`, labelled "Related") directly under the latest answer card only — not repeated inside every prior message — and are hidden while a response is streaming.
+  - Suggestions are tightened client-side against the catalog sample prompts: they prefer the matched product's subcommand-level prompts and exclude any question already asked in the conversation, so chips stay on-topic and forward-looking.
 
 ### E. Prompt Composer
 - Multi-line text input.

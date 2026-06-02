@@ -21,6 +21,15 @@ import { deterministicIntentResponse, isCodeIntent, isFollowUpPrompt, isKnowledg
 import { buildDocSearchPromptSupplement, retrieveDocsForPrompt, initCorpus } from "./doc-search.mjs";
 import { baselineProductsToUi, getOllamaRuntime, lokiStateFromBaseline } from "./runtime-status.mjs";
 import { streamSSESections, streamSSEText, proxyOllamaStreamToSSE } from "./sse.mjs";
+import {
+  resolveScenarioContext,
+  listRequiredStatusTools,
+  buildScenarioPromptSupplement,
+  buildDeterministicScenarioBlocks,
+  spliceDeterministicSections,
+  collectGroundedScenarioUrls,
+  scrubUngroundedLinks
+} from "./scenario-registry.mjs";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -68,7 +77,7 @@ function resolveOllamaBaseUrl() {
 }
 
 const OLLAMA_BASE_URL = resolveOllamaBaseUrl();
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen3.5";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4:latest";
 const OLLAMA_MODEL_LABEL = process.env.OLLAMA_MODEL_LABEL || OLLAMA_MODEL;
 const OLLAMA_CONTEXT_WINDOW = Number(process.env.OLLAMA_CONTEXT_WINDOW || 32768);
 const OLLAMA_KEEP_ALIVE = String(process.env.OLLAMA_KEEP_ALIVE || "5m").trim() || "5m";
@@ -162,7 +171,7 @@ const PRODUCT_PROBES = [
     containerHost: "hal-tfe",
     localhostHost: "127.0.0.1",
     port: 8443,
-    healthPath: "/_health_check",
+    healthPath: "/api/v1/health/readiness",
     scheme: "https",
     uiEndpoint: "https://tfe.localhost:8443"
   },
@@ -320,6 +329,36 @@ async function callMcpWithFallback(primaryTool, fallbackTools, args = {}) {
   return primary;
 }
 
+// Gather live MCP status facts for every status tool a scenario depends on.
+// Returns a map keyed by tool name: { ok, structured, text }. Tools that do not
+// exist yet (e.g. a proposed status tool) resolve to { ok: false } so the model
+// falls back to the capability notes.
+async function gatherScenarioMcpFacts(toolNames) {
+  const factsByTool = {};
+  await Promise.all(
+    (toolNames || []).map(async (toolName) => {
+      try {
+        const result = await halMcpClient.callTool(toolName, {});
+        const textContent = Array.isArray(result?.content)
+          ? result.content
+              .filter((part) => part?.type === "text" && typeof part.text === "string")
+              .map((part) => part.text)
+              .join("\n")
+              .trim()
+          : "";
+        factsByTool[toolName] = {
+          ok: !result?.isError,
+          structured: result?.structuredContent?.data ?? result?.structuredContent ?? null,
+          text: textContent
+        };
+      } catch {
+        factsByTool[toolName] = { ok: false, structured: null, text: "" };
+      }
+    })
+  );
+  return factsByTool;
+}
+
 async function rankDocsForPrompt(prompt, context) {
   const resources = collectBehaviorResources(context).slice(0, 10);
   if (!prompt || resources.length === 0) {
@@ -428,12 +467,18 @@ app.get("/api/status", async (_req, res) => {
     const skillsCount = Number(runtimeCatalog?.skills?.skills_count || 0);
     const missingTools = missingCoreMcpTools(runtimeCatalog, null);
     const discoveryAvailable = Boolean(runtimeCatalog);
-    const mcpTransportOk = discoveryAvailable && missingTools.length === 0;
+    // MCP is "online" when discovery works (server reachable + tools listed).
+    // Missing advertised tools are informational, not a hard down — and the lab
+    // runtime baseline (engine state) is a separate signal surfaced via products.
+    const mcpTransportOk = discoveryAvailable;
     const mcpRuntimeOk = !baseline?.isError;
     const baselineMessage = typeof baseline?.structuredContent?.message === "string"
       ? baseline.structuredContent.message.trim()
       : "";
     const engineUnavailable = isEngineUnavailableBaselineError(baselineMessage);
+    const missingToolsNote = missingTools.length > 0
+      ? ` · ${missingTools.length} optional tool${missingTools.length === 1 ? "" : "s"} not advertised: ${missingTools.join(", ")}`
+      : "";
 
     res.json({
       runtime: {
@@ -453,19 +498,15 @@ app.get("/api/status", async (_req, res) => {
           ok: mcpTransportOk,
           runtimeOk: mcpRuntimeOk,
           url: String(process.env.HAL_MCP_HTTP_URL || "").trim() || null,
-          detail: mcpTransportOk && mcpRuntimeOk
-            ? `HAL MCP runtime tools ready (${toolCount} tools, ${capabilityCount} actions, ${skillsCount} skills)`
-            : mcpTransportOk && !mcpRuntimeOk
-              ? engineUnavailable
-                ? `HAL MCP reachable over HTTP (${toolCount} tools)`
+          detail: !discoveryAvailable
+            ? "HAL MCP discovery unavailable"
+            : mcpRuntimeOk
+              ? `HAL MCP online · ${toolCount} tools, ${capabilityCount} actions, ${skillsCount} skills${missingToolsNote}`
+              : engineUnavailable
+                ? `HAL MCP online · ${toolCount} tools (lab runtime baseline unavailable: container engine offline)${missingToolsNote}`
                 : baselineMessage
-                ? `HAL MCP reachable over HTTP, but runtime baseline failed: ${baselineMessage}`
-                : "HAL MCP reachable over HTTP, but runtime baseline failed"
-            : !discoveryAvailable
-              ? "HAL MCP discovery unavailable"
-              : missingTools.length > 0
-                ? `HAL MCP missing required tools: ${missingTools.join(", ")}`
-                : "HAL MCP runtime tools unavailable",
+                  ? `HAL MCP online · ${toolCount} tools (runtime baseline failed: ${baselineMessage})${missingToolsNote}`
+                  : `HAL MCP online · ${toolCount} tools (runtime baseline failed)${missingToolsNote}`,
           missingTools
         }
       },
@@ -511,6 +552,87 @@ app.post("/api/chat", async (req, res) => {
     const inputMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
 
     const prompt = lastUserPrompt(inputMessages);
+
+    // Route S (scenario): a multi-step educational walkthrough. Fires only when both a
+    // scenario shape AND a primary capability resolve, so it never hijacks simple
+    // status/factual questions. Composes the answer from the capability graph
+    // (provision commands + lab defaults), live hal MCP status, and doc evidence.
+    const scenarioContext = resolveScenarioContext(prompt);
+    if (scenarioContext?.shape && scenarioContext?.primary) {
+      // Always gather the authoritative credentials tool alongside the
+      // scenario's status tools so the deterministic renderer can source
+      // credentials from `hal creds status` where it covers the service.
+      const scenarioTools = Array.from(new Set([...listRequiredStatusTools(scenarioContext), "get_active_credentials"]));
+      const [scenarioFacts, scenarioDocs] = await Promise.all([
+        gatherScenarioMcpFacts(scenarioTools).catch(() => ({})),
+        docsForPromptWithFallback(prompt, null, inputMessages).catch(() => ({ docs: [], chunks: [], mode: "error" }))
+      ]);
+
+      // Resolve exact Access surfaces/credentials and Observe links up front so
+      // we can splice them into the answer deterministically (the model mangles
+      // long URLs and sometimes drops credentials).
+      const deterministicBlocks = buildDeterministicScenarioBlocks(scenarioContext, scenarioFacts);
+
+      const scenarioSystemPrompt = [
+        "You are HAL Plus, an educational HashiCorp Academy Labs assistant for interns, customers, and engineers.",
+        "Answer the user's question as a guided, end-to-end scenario walkthrough using the shape and grounded facts below.",
+        "Write warm, clear prose with the section headings from the shape (Overview, Provision, Access, Trigger, Observe, Under the hood, Learn more).",
+        "Show hal commands in fenced bash blocks. Display lab credentials plainly (they are non-secret demo values).",
+        "Obey the grounding rules exactly: never invent commands, URLs, or credentials.",
+        "",
+        buildScenarioPromptSupplement(scenarioContext, scenarioFacts),
+        buildDocSearchPromptSupplement(scenarioDocs)
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      const scenarioMessages = [
+        { role: "system", content: scenarioSystemPrompt },
+        ...inputMessages
+          .filter((m) => typeof m?.role === "string" && typeof m?.content === "string")
+          .map((m) => ({ role: m.role, content: m.content }))
+      ];
+
+      // Generate the full narrative non-streaming so we can splice the
+      // deterministic Access/Observe blocks (and scrub leaked dotted paths)
+      // before emitting. We trade a little time-to-first-token for exact URLs
+      // and credentials — then stream the assembled answer section by section.
+      const scenarioResponse = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          keep_alive: OLLAMA_KEEP_ALIVE,
+          stream: false,
+          messages: scenarioMessages
+        })
+      });
+
+      if (!scenarioResponse.ok) {
+        const errBody = await scenarioResponse.text();
+        res.status(502).json({ error: `Ollama error: ${errBody || scenarioResponse.statusText}` });
+        return;
+      }
+
+      const scenarioPayload = await scenarioResponse.json();
+      const rawAnswer = scenarioPayload?.message?.content || "";
+      // Splice deterministic Access/Observe blocks, then strip any link the
+      // small model invented (e.g. fabricated developer.hashicorp.com/.../tfx/*
+      // pages) by allowing only grounded corpus + lab URLs through.
+      const groundedUrls = collectGroundedScenarioUrls(scenarioDocs, deterministicBlocks);
+      const assembledAnswer = scrubUngroundedLinks(
+        spliceDeterministicSections(rawAnswer, deterministicBlocks),
+        groundedUrls
+      );
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.write(`data: ${JSON.stringify({ type: "meta", source: "scenario", mcpServer: "hal", topic: scenarioContext.shape.id, capability: scenarioContext.primary.id })}\n\n`);
+      await streamSSESections(res, assembledAnswer, { delayMs: 60, headersAlreadySet: true });
+      return;
+    }
+
     const behaviorContext = resolveBehaviorContextFromConversation(inputMessages, prompt);
 
     // Route C: if no behavior matched and this looks like a follow-up, retrieve the last matched context

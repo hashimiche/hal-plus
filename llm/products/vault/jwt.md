@@ -55,8 +55,8 @@
     }
   ],
   "actionCommands": [
-    "hal vault jwt --enable",
-    "hal vault jwt --force"
+    "hal vault jwt enable",
+    "hal vault jwt update"
   ],
   "verifyCommands": [
     "hal vault jwt",
@@ -97,7 +97,7 @@
   "notes": [
     "If the user asks about browser login, route to the OIDC flow instead of JWT.",
     "Be explicit that the default role is tag-focused, so protected tag behavior matters in the demo.",
-    "Use hal vault jwt --enable as the primary recommendation, then cite the JWT auth docs when role details are needed."
+    "Use hal vault jwt enable as the primary recommendation, then cite the JWT auth docs when role details are needed."
   ],
   "samplePrompts": [
     "How do I enable JWT auth in the Vault lab?",
@@ -107,13 +107,13 @@
 }
 -->
 
-When you run `hal vault jwt --enable`, HAL wires Vault's JWT auth method to a local GitLab instance and creates bound-claims roles for CI pipeline authentication.
+When you run `hal vault jwt enable`, HAL wires Vault's JWT auth method to a local GitLab instance and creates bound-claims roles for CI pipeline authentication.
 
 ### What gets configured
 
 - JWT auth mount bound to the local GitLab JWKS endpoint
 - Roles with `bound_claims` that enforce protected tag constraints and project-level guards
-- This is the **CI/pipeline** auth path — for human SSO use `hal vault oidc --enable`
+- This is the **CI/pipeline** auth path — for human SSO use `hal vault oidc enable`
 
 ### Inspect the JWT config
 
