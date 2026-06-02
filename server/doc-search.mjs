@@ -71,8 +71,23 @@ const PRODUCT_TREE = {
   terraform: {
     label: "Terraform",
     roots: [
+      // Root pages — establish top-level nav and link graph
       "https://developer.hashicorp.com/terraform/enterprise",
       "https://developer.hashicorp.com/terraform/cloud-docs",
+      // Explicit seeds for the run-workflow pages. These live at depth=3
+      // (cloud-docs → workspaces → run → <mode>), beyond the default crawl
+      // depth, but they are the authoritative pages for the VCS/CLI/API-driven
+      // workflow scenarios, so seed them directly.
+      "https://developer.hashicorp.com/terraform/cloud-docs/workspaces/run/api",
+      "https://developer.hashicorp.com/terraform/cloud-docs/workspaces/run/cli",
+      "https://developer.hashicorp.com/terraform/cloud-docs/workspaces/run/ui",
+      "https://developer.hashicorp.com/terraform/cloud-docs/workspaces/run/remote-operations",
+      "https://developer.hashicorp.com/terraform/cloud-docs/workspaces/run/modes-and-options",
+      // Supporting deep pages the API/CLI-driven scenarios reference
+      "https://developer.hashicorp.com/terraform/cloud-docs/run/remote-operations",
+      "https://developer.hashicorp.com/terraform/cloud-docs/api-docs/configuration-versions",
+      "https://developer.hashicorp.com/terraform/cloud-docs/api-docs/run",
+      "https://developer.hashicorp.com/terraform/cli/cloud",
     ],
     prefixes: ["/terraform"],
     depth: DOC_SEARCH_CRAWL_DEPTH,
@@ -611,18 +626,33 @@ export function initCorpus() {
 
 // Headless corpus build (CI / offline ingest)
 //
-// Unlike initCorpus(), this awaits a fresh crawl of every product and persists
+// Unlike initCorpus(), this awaits a fresh crawl and persists
 // chunks.json/index/manifest to disk. It is the entry point used by the
 // corpus-image pipeline (scripts/crawl-corpus.mjs) to populate the on-disk
 // corpus that push-to-qdrant.mjs then embeds and upserts into Qdrant.
 // Always forces a rebuild so scheduled runs pick up evolving docs.
 
-export async function buildAllCorpora() {
-  const productIds = Object.keys(PRODUCT_TREE);
-  for (const productId of productIds) {
+// The product ids known to the corpus, in declaration order. Used by the
+// corpus-image CI to fan out one crawl+embed job per product.
+export function listCorpusProducts() {
+  return Object.keys(PRODUCT_TREE);
+}
+
+// Crawl a subset of products (or all, when productIds is empty/omitted).
+// Unknown ids are skipped. Returns the ids actually crawled.
+export async function buildCorpora(productIds) {
+  const ids =
+    Array.isArray(productIds) && productIds.length > 0
+      ? productIds.filter((id) => PRODUCT_TREE[id])
+      : Object.keys(PRODUCT_TREE);
+  for (const productId of ids) {
     await buildCorpus(productId);
   }
-  return productIds;
+  return ids;
+}
+
+export async function buildAllCorpora() {
+  return buildCorpora();
 }
 
 // Query helpers
