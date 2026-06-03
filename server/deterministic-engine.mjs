@@ -756,19 +756,23 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
   const verifyCommands = compactCommands(verifyCommandsRaw, 2);
   const notes = compactNotes(notesRaw, 2);
   const focusBullets = compactNotes(focusBulletsRaw, 2);
+  // Tag each resource with its origin so the secondary-doc relevance gate can tell
+  // subcommand-specific curated docs (behavior) apart from generic product-level docs.
+  const tagOrigin = (list, origin) =>
+    (Array.isArray(list) ? list : []).map((r) => ({ ...r, _origin: r?._origin || origin }));
   const resourceItems = []
-    .concat(Array.isArray(behavior.resources) ? behavior.resources : [])
-    .concat(Array.isArray(product?.resources) ? product.resources : [])
-    .concat((grounding?.status?.docs || []).map((href) => ({ title: "HAL MCP doc", href, kind: "official" })))
-    .concat((grounding?.help?.docs || []).map((href) => ({ title: "HAL MCP help doc", href, kind: "official" })))
-    .concat((grounding?.verify?.docs || []).map((href) => ({ title: "HAL MCP verify doc", href, kind: "official" })));
+    .concat(tagOrigin(behavior.resources, "behavior"))
+    .concat(tagOrigin(product?.resources, "product"))
+    .concat((grounding?.status?.docs || []).map((href) => ({ title: "HAL MCP doc", href, kind: "official", _origin: "grounding" })))
+    .concat((grounding?.help?.docs || []).map((href) => ({ title: "HAL MCP help doc", href, kind: "official", _origin: "grounding" })))
+    .concat((grounding?.verify?.docs || []).map((href) => ({ title: "HAL MCP verify doc", href, kind: "official", _origin: "grounding" })));
   const resources = uniqueResourceList(resourceItems);
   const monitoringIntent = isMonitoringIntent(prompt);
-  const officialCandidates = resources
+  const scoredOfficial = resources
     .filter((resource) => resource.kind === "official")
     .map((resource) => ({ resource, score: scoreResourceForPrompt(prompt, resource) }))
-    .sort((left, right) => right.score - left.score)
-    .map((entry) => entry.resource);
+    .sort((left, right) => right.score - left.score);
+  const officialCandidates = scoredOfficial.map((entry) => entry.resource);
 
   // docSearch section-level links (href#anchor) indexed by their base page URL for quick lookup.
   const docSearchByBase = new Map();
@@ -799,12 +803,52 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
     return resource;
   }
 
+  // Secondary-doc relevance gate. The single top-scoring doc is always kept. A 2nd
+  // doc is only added when it is genuinely on-topic: a curated subcommand/grounding
+  // resource, a deeper anchor on the same page, or a generic product doc whose
+  // distinguishing path segment actually appears in the prompt. This prevents an
+  // off-topic sibling page (e.g. auth/kubernetes surfacing on an LDAP question) from
+  // being padded in just because it shares the "official" base score.
+  const lowerPromptForDocs = String(prompt || "").toLowerCase();
+  const hrefLeaf = (href) =>
+    String(href || "").split("#")[0].split("?")[0].replace(/\/+$/, "").split("/").pop()?.toLowerCase() || "";
+  // A bare product landing page (e.g. /vault or /vault/docs) has <= 2 path segments
+  // and carries no subcommand-specific value as a secondary doc.
+  const isBareLandingPage = (href) => {
+    try {
+      const path = new URL(String(href || "")).pathname.replace(/\/+$/, "");
+      const segments = path.split("/").filter(Boolean);
+      return segments.length <= 2;
+    } catch {
+      return false;
+    }
+  };
+  function gateSecondaryDocs(ordered) {
+    if (ordered.length <= 1) return ordered.slice(0, 2);
+    const primary = ordered[0];
+    const primaryLeaf = hrefLeaf(primary.href);
+    const kept = [primary];
+    for (const cand of ordered.slice(1)) {
+      if (kept.length >= 2) break;
+      const curated = cand._origin === "behavior" || cand._origin === "grounding";
+      const leaf = hrefLeaf(cand.href);
+      const leafInPrompt = leaf.length >= 3 && lowerPromptForDocs.includes(leaf);
+      const samePage = leaf === primaryLeaf;
+      // Skip bare product landing pages — they add no subcommand-specific value.
+      if (isBareLandingPage(cand.href) && !samePage) continue;
+      if (curated || leafInPrompt || samePage) {
+        kept.push(cand);
+      }
+    }
+    return kept;
+  }
+
   const officialDocs = (() => {
     // Behavior resources are authoritative for the matched product/subcommand.
     // Only fall back to docSearch when the behavior has no official resources at all.
     if (officialCandidates.length > 0) {
       if (!monitoringIntent) {
-        return officialCandidates.slice(0, 2).map(upgradeToSectionLink);
+        return gateSecondaryDocs(officialCandidates).map(upgradeToSectionLink);
       }
       const monitoringDocs = officialCandidates.filter((resource) => isMonitoringResource(resource));
       const docs = monitoringDocs.length > 0 ? [monitoringDocs[0]] : [];
@@ -817,7 +861,7 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
           break;
         }
       }
-      return docs.slice(0, 2).map(upgradeToSectionLink);
+      return gateSecondaryDocs(docs).map(upgradeToSectionLink);
     }
     // Fallback: docSearch when behavior has no official resources.
     return Array.isArray(docSearch?.docs)
@@ -826,6 +870,41 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
           .map((doc) => ({ title: doc.title || "Documentation", href: doc.href, kind: doc.kind || "guide" }))
           .slice(0, 2)
       : [];
+  })();
+
+  // Supplementary "Learn more" links sourced from the qdrant/doc-search corpus:
+  // high-confidence tutorials, validated designs, and API-docs pages — even on a
+  // different page than the curated authoritative Docs. These broaden the answer
+  // with hands-on / reference material without displacing the authoritative links.
+  const learnMore = (() => {
+    const chunks = Array.isArray(docSearch?.chunks) ? docSearch.chunks : [];
+    if (chunks.length === 0) return [];
+    const classifyDeepLink = (href) => {
+      const h = String(href || "").toLowerCase();
+      if (h.includes("/tutorials/")) return "Tutorial";
+      if (h.includes("/validated-designs/") || h.includes("/well-architected-framework/")) return "Validated design";
+      if (h.includes("/api-docs/") || h.includes("/api/") || h.includes("/api-reference")) return "API docs";
+      return null;
+    };
+    const LEARN_MORE_MIN_SCORE = 0.5;
+    const seenBase = new Set(officialDocs.map((d) => String(d.href || "").split("#")[0]));
+    const seenCategory = new Set();
+    const out = [];
+    for (const chunk of chunks) {
+      const href = String(chunk?.href || "").trim();
+      if (!href) continue;
+      const base = href.split("#")[0];
+      if (seenBase.has(base)) continue;
+      const score = Number(chunk?.finalScore ?? chunk?.semanticScore ?? 0);
+      if (score < LEARN_MORE_MIN_SCORE) continue;
+      const category = classifyDeepLink(href);
+      if (!category || seenCategory.has(category)) continue;
+      seenBase.add(base);
+      seenCategory.add(category);
+      out.push({ category, title: chunk.sectionTitle || chunk.sourceTitle || category, href });
+      if (out.length >= 3) break;
+    }
+    return out;
   })();
 
   const uiLinks = uniqueResourceList(
@@ -890,6 +969,10 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
     } else {
       lines.push("", "Docs:", ...officialDocs.map((resource) => `- ${resource.href}`));
     }
+  }
+
+  if (learnMore.length > 0) {
+    lines.push("", "Learn more:", ...learnMore.map((doc) => `- ${doc.category}: ${doc.href}`));
   }
 
   if (shouldIncludeLinks && uiLinks.length > 0) {

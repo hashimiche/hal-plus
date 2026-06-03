@@ -90,6 +90,23 @@ Tips:
 - <note>
 ```
 
+**Docs link selection (deterministic engine `officialDocs`):**
+
+- The single top-scoring official resource (curated behavior/product/grounding doc) is always the primary `Docs:` link.
+- A 2nd `Docs:` link is only added when it is genuinely on-topic, via `gateSecondaryDocs`:
+  - it is a curated subcommand-specific (`_origin: "behavior"`) or grounding doc, OR
+  - its distinguishing path leaf (e.g. `ldap`, `kubernetes`) actually appears in the prompt, OR
+  - it is a deeper anchor on the same base page as the primary.
+- Bare product landing pages (≤ 2 path segments, e.g. `/vault`, `/vault/docs`) are never used as a 2nd link.
+- Rationale: prevents an off-topic sibling page (e.g. `auth/kubernetes` padding an LDAP answer) or a low-value root from being added just because it shares the "official" base score.
+
+**`Learn more:` supplementary links (qdrant/doc-search corpus):**
+
+- After `Docs:`, the engine appends up to 3 `Learn more:` links sourced from the retrieved doc-search `chunks` (qdrant when enabled).
+- Only high-confidence chunks (`finalScore`/`semanticScore` ≥ 0.5) on pages NOT already in `Docs:` qualify.
+- Each link is categorized and de-duplicated by category: `Tutorial` (`/tutorials/`), `Validated design` (`/validated-designs/`, `/well-architected-framework/`), `API docs` (`/api-docs/`, `/api/`).
+- These broaden the answer with hands-on / reference material; they never displace the authoritative curated `Docs:` links.
+
 **New addition for Route B — "Under the Hood" expansion:**
 
 When the prompt contains a code/internals signal (`isCodeIntent`), append a `## Under the hood` section after the Tips block. This section comes from the behavior file `body` field (static markdown authored in `llm/products/**/*.md`).
