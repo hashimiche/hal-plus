@@ -565,7 +565,12 @@ app.post("/api/chat", async (req, res) => {
       const scenarioTools = Array.from(new Set([...listRequiredStatusTools(scenarioContext), "get_active_credentials"]));
       const [scenarioFacts, scenarioDocs] = await Promise.all([
         gatherScenarioMcpFacts(scenarioTools).catch(() => ({})),
-        docsForPromptWithFallback(prompt, null, inputMessages).catch(() => ({ docs: [], chunks: [], mode: "error" }))
+        // Pass the scenario context (not null) so doc retrieval can resolve the
+        // product from the primary capability (e.g. tfe_api_workflow -> terraform).
+        // With null, contextProductId() returned "" and retrieval short-circuited
+        // with zero chunks, leaving the model no evidence and forcing it to fall
+        // back to the bare product root for every per-component citation.
+        docsForPromptWithFallback(prompt, scenarioContext, inputMessages).catch(() => ({ docs: [], chunks: [], mode: "error" }))
       ]);
 
       // Resolve exact Access surfaces/credentials and Observe links up front so
