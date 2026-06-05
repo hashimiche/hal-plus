@@ -28,7 +28,8 @@ import {
   buildDeterministicScenarioBlocks,
   spliceDeterministicSections,
   collectGroundedScenarioUrls,
-  scrubUngroundedLinks
+  scrubUngroundedLinks,
+  pruneLinklessLearnMore
 } from "./scenario-registry.mjs";
 
 const app = express();
@@ -625,9 +626,11 @@ app.post("/api/chat", async (req, res) => {
       // small model invented (e.g. fabricated developer.hashicorp.com/.../tfx/*
       // pages) by allowing only grounded corpus + lab URLs through.
       const groundedUrls = collectGroundedScenarioUrls(scenarioDocs, deterministicBlocks);
-      const assembledAnswer = scrubUngroundedLinks(
-        spliceDeterministicSections(rawAnswer, deterministicBlocks),
-        groundedUrls
+      const assembledAnswer = pruneLinklessLearnMore(
+        scrubUngroundedLinks(
+          spliceDeterministicSections(rawAnswer, deterministicBlocks),
+          groundedUrls
+        )
       );
 
       res.setHeader("Content-Type", "text/event-stream");

@@ -52,8 +52,8 @@ const DOC_SEARCH_FETCH_TTL_MS = Number(
   process.env.HAL_DOC_SEARCH_FETCH_TTL_MS || 12 * 60 * 60 * 1000
 );
 const DOC_SEARCH_CRAWL_DEPTH = Number(process.env.HAL_DOC_SEARCH_CRAWL_DEPTH || 2);
-const DOC_SEARCH_MAX_PAGES = Number(process.env.HAL_DOC_SEARCH_MAX_PAGES || 300);
-const DOC_SEARCH_CORPUS_VERSION = "3";
+const DOC_SEARCH_MAX_PAGES = Number(process.env.HAL_DOC_SEARCH_MAX_PAGES || 600);
+const DOC_SEARCH_CORPUS_VERSION = "4";
 
 const DOC_ALLOWED_HOSTS = new Set([
   "developer.hashicorp.com",
@@ -88,8 +88,23 @@ const PRODUCT_TREE = {
       "https://developer.hashicorp.com/terraform/cloud-docs/api-docs/configuration-versions",
       "https://developer.hashicorp.com/terraform/cloud-docs/api-docs/run",
       "https://developer.hashicorp.com/terraform/cli/cloud",
+      // Tutorials (source_type=tutorial) — collection index + high-signal tracks.
+      // The crawler follows /terraform/tutorials/* via the product prefix.
+      "https://developer.hashicorp.com/terraform/tutorials",
+      "https://developer.hashicorp.com/terraform/tutorials/cloud-get-started",
+      "https://developer.hashicorp.com/terraform/tutorials/configuration-language/test",
+      // Validated designs (source_type=validated-design) — Terraform enterprise
+      // adoption/standardization/solution guides. Crawled via the product-scoped
+      // /validated-designs/terraform prefix (keeps other products' guides out).
+      "https://developer.hashicorp.com/validated-designs/terraform-operating-guides-adoption",
+      "https://developer.hashicorp.com/validated-designs/terraform-operating-guides-standardization",
+      "https://developer.hashicorp.com/validated-designs/terraform-solution-design-guides-terraform-enterprise",
+      // Validated patterns (source_type=validated-pattern) — field-tested
+      // integration tutorials. Index page fans out to per-pattern pages via the
+      // product-scoped /validated-patterns/terraform prefix.
+      "https://developer.hashicorp.com/validated-patterns/terraform",
     ],
-    prefixes: ["/terraform"],
+    prefixes: ["/terraform", "/validated-designs/terraform", "/validated-patterns/terraform"],
     depth: DOC_SEARCH_CRAWL_DEPTH,
     maxPages: DOC_SEARCH_MAX_PAGES,
     kind: "official",
@@ -111,8 +126,18 @@ const PRODUCT_TREE = {
       "https://developer.hashicorp.com/vault/docs/audit",
       "https://developer.hashicorp.com/vault/docs/deploy/kubernetes/vso",
       "https://developer.hashicorp.com/vault/docs/internals/telemetry",
+      // Validated designs (source_type=validated-design) — Vault enterprise
+      // adoption/standardization/solution guides. Crawled via the product-scoped
+      // /validated-designs/vault prefix (keeps other products' guides out).
+      "https://developer.hashicorp.com/validated-designs/vault-operating-guides-adoption",
+      "https://developer.hashicorp.com/validated-designs/vault-operating-guides-standardization",
+      "https://developer.hashicorp.com/validated-designs/vault-solution-design-guides-vault-enterprise",
+      // Validated patterns (source_type=validated-pattern) — field-tested
+      // integration tutorials (e.g. dynamic secrets, VSO, AppRole). Index page
+      // fans out to per-pattern pages via /validated-patterns/vault.
+      "https://developer.hashicorp.com/validated-patterns/vault",
     ],
-    prefixes: ["/vault"],
+    prefixes: ["/vault", "/validated-designs/vault", "/validated-patterns/vault"],
     depth: DOC_SEARCH_CRAWL_DEPTH,
     maxPages: DOC_SEARCH_MAX_PAGES,
     kind: "official",

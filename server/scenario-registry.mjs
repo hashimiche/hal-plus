@@ -370,7 +370,7 @@ export function buildScenarioPromptSupplement(context, factsByTool = {}) {
       "- If a path cannot be resolved (no data at all), describe the item in plain words (e.g. 'the TFE admin username the CLI prints') — do NOT print the path and do NOT invent a value.",
       "- If a Live status block says the lab is not currently running, still present the canonical endpoints/credentials, but add a short note that the user must run the provision commands first before they work.",
       "- 'Under the hood': break the mechanism into its key components and attach the single most relevant link INLINE to each component (a specific doc section, tutorial step, API endpoint, or video timestamp from the documentation evidence). Prefer targeted links over a generic recap.",
-      "- 'Learn more': the broad recap of typed source cards; the inline citations above are the targeted per-component links.",
+      "- 'Learn more': list ONLY typed source cards that carry a REAL link taken verbatim from the documentation evidence; every card MUST end with its evidence URL. If a source type (tutorial, validated design, validated pattern, video) has no matching evidence link, OMIT that card entirely — NEVER write a card whose link is missing, '(no specific link provided)', 'not in the corpus', a bare label like '[Tutorial]', or any other placeholder. If the evidence has no linkable sources at all, omit the 'Learn more' section completely.",
       "- CRITICAL: every link must come from the documentation evidence provided separately. NEVER invent, guess, or emit placeholder links (e.g. '[Design]', '[Tutorial]', bare labels). If no evidence matches a component, explain it plainly and omit the link; if the evidence is empty, say the curated sources are not available yet rather than inventing any.",
       "- Lab credentials shown above are non-secret demo values and may be displayed."
     ].join("\n")
@@ -708,5 +708,85 @@ export function scrubUngroundedLinks(answerText, allowedUrls = []) {
     .replace(/[ \t]+\n/g, "\n");
 
   return text;
+}
+
+const LEARN_MORE_HEADING_PATTERN = /^#{1,6}\s+learn more\s*$/i;
+const ANY_HEADING_PATTERN = /^#{1,6}\s+\S/;
+
+/**
+ * Remove "Learn more" cards that have no real link. The scenario model is told
+ * to emit only link-backed source cards, but small models still pad the section
+ * with tutorial/validated-pattern cards that admit "(no specific link provided)".
+ * A linkless card is useless to the reader, so we drop it deterministically:
+ * within the `Learn more` section, blank-line-separated blocks that contain no
+ * URL are removed; if nothing linkable remains, the whole section (heading
+ * included) is dropped.
+ */
+export function pruneLinklessLearnMore(answerText) {
+  const lines = String(answerText || "").split("\n");
+
+  let headingIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (LEARN_MORE_HEADING_PATTERN.test(lines[i].trim())) {
+      headingIdx = i;
+      break;
+    }
+  }
+  if (headingIdx === -1) {
+    return String(answerText || "");
+  }
+
+  // Section body runs until the next heading (or end of document).
+  let endIdx = lines.length;
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    if (ANY_HEADING_PATTERN.test(lines[i])) {
+      endIdx = i;
+      break;
+    }
+  }
+
+  // Split the body into blank-line-separated blocks (one per source card).
+  const blocks = [];
+  let current = [];
+  for (const line of lines.slice(headingIdx + 1, endIdx)) {
+    if (line.trim() === "") {
+      if (current.length) {
+        blocks.push(current);
+        current = [];
+      }
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length) {
+    blocks.push(current);
+  }
+
+  const kept = blocks.filter((block) => /https?:\/\//i.test(block.join("\n")));
+
+  let rebuilt;
+  if (kept.length === 0) {
+    // Nothing linkable — drop the whole "Learn more" section.
+    rebuilt = [...lines.slice(0, headingIdx), ...lines.slice(endIdx)];
+  } else {
+    const bodyOut = [];
+    kept.forEach((block, idx) => {
+      if (idx > 0) bodyOut.push("");
+      bodyOut.push(...block);
+    });
+    rebuilt = [
+      ...lines.slice(0, headingIdx + 1),
+      "",
+      ...bodyOut,
+      "",
+      ...lines.slice(endIdx)
+    ];
+  }
+
+  return rebuilt
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\s+$/, "")
+    .concat("\n");
 }
 
