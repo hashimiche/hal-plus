@@ -5,7 +5,7 @@
   "productLabel": "Vault",
   "subcommand": "k8s",
   "title": "Vault Kubernetes Auth And VSO Flow",
-  "summary": "Enable the KinD plus Vault Secrets Operator lab, validate the kubernetes auth method, and choose native sync versus CSI mode.",
+  "summary": "Set up Vault Kubernetes auth with service accounts, then choose native sync or CSI mode for the KinD plus Vault Secrets Operator lab.",
   "priority": 98,
   "mcp": {
     "baselineTool": "hal_status_baseline",
@@ -22,6 +22,10 @@
       "k8s auth engine",
       "kubernetes auth engine",
       "kubernetes auth method",
+      "kubernetes service accounts",
+      "kubernetes service account",
+      "service accounts",
+      "service account",
       "enable kubernetes",
       "kubernetes auth",
       " k8s ",
@@ -53,9 +57,7 @@
     }
   ],
   "actionCommands": [
-    "hal vault k8s enable",
-    "hal vault k8s enable --csi",
-    "hal vault k8s update"
+    "hal vault k8s enable"
   ],
   "verifyCommands": [
     "hal vault k8s",
@@ -66,16 +68,16 @@
   ],
   "resources": [
     {
-      "title": "Vault Kubernetes Auth Method",
-      "href": "https://developer.hashicorp.com/vault/docs/auth/kubernetes",
-      "kind": "official",
-      "description": "Configure the Kubernetes auth method and service account token validation."
-    },
-    {
       "title": "Vault K8s Auth — Configuring Kubernetes",
       "href": "https://developer.hashicorp.com/vault/docs/auth/kubernetes#configuring-kubernetes",
       "kind": "official",
-      "description": "Step-by-step guide to configure the Kubernetes auth method backend."
+      "description": "Step-by-step guide for configuring the Kubernetes auth method backend and service-account validation."
+    },
+    {
+      "title": "Vault Kubernetes Auth Method",
+      "href": "https://developer.hashicorp.com/vault/docs/auth/kubernetes",
+      "kind": "official",
+      "description": "Overview of the Kubernetes auth method and service-account token validation."
     },
     {
       "title": "Vault K8s Auth — Reviewer JWT",
@@ -113,6 +115,7 @@
   ],
   "samplePrompts": [
     "I want to configure the k8s auth engine",
+    "How do I use Vault with Kubernetes service accounts?",
     "How do I enable Vault Secrets Operator in HAL?",
     "What is the CSI path for the Vault k8s lab?"
   ]

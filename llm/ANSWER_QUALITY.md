@@ -27,6 +27,15 @@ Detection patterns (`isKnowledgeQuestion`):
 - "why does X", "what is X", "what's the difference"
 - "how does X work" (without "configure", "enable", "setup", "code", "api" nearby)
 
+**Operational override (stays out of Route A):** hands-on phrasings route to
+Route B even though they start with "how do I". The override list includes
+"how do i use", "how do i set up", "how do i work with", "how do i wire",
+"how do i integrate" (plus "configure", "enable", "deploy", "install", "how to").
+So "How do I use Vault with Kubernetes service accounts?" is a Route B walkthrough,
+not a thin Route A prose answer. Overrides are kept as multi-word phrases so the
+bare substring "use" never flips a genuine knowledge question (e.g. "which URL
+should I use") into the operational route.
+
 **Output format:**
 
 ```
@@ -189,7 +198,7 @@ Body authoring rules:
 - Length: 20–80 lines is the target range; do not pad
 
 **Files that need body content written (Step 4 of the plan):**
-- `vault/k8s.md` — kubernetes auth method (vault CLI + API)
+- `vault/k8s.md` — kubernetes auth method (vault CLI + API); for service-account prompts, prefer the service-account auth flow and the `#configuring-kubernetes` docs anchor over the product overview.
 - `vault/database.md` — database secrets engine
 - `vault/jwt.md` — JWT auth method config
 - `vault/ldap.md` — LDAP auth method config

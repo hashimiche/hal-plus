@@ -112,7 +112,19 @@ export function isKnowledgeQuestion(prompt) {
     "steps to",
     "enable",
     "deploy",
-    "install"
+    "install",
+    // Usage / setup phrasings: "how do I use X", "how do I set up X" are
+    // hands-on requests that deserve the full operational walkthrough, not the
+    // thin knowledge prose. Kept as multi-word phrases so the bare substring
+    // "use" (e.g. in "because", "reuse", "which url should I use") never flips
+    // an actual knowledge question into the operational route.
+    "how do i use",
+    "how can i use",
+    "how do i set up",
+    "how do i setup",
+    "how do i work with",
+    "how do i wire",
+    "how do i integrate"
   ];
   const matchesKnowledge = knowledgePhrases.some((p) => lower.includes(p));
   const matchesOperational = operationalOverride.some((p) => lower.includes(p));
@@ -843,7 +855,7 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
     return kept;
   }
 
-  const officialDocs = (() => {
+  const officialDocs = uniqueResourceList((() => {
     // Behavior resources are authoritative for the matched product/subcommand.
     // Only fall back to docSearch when the behavior has no official resources at all.
     if (officialCandidates.length > 0) {
@@ -870,7 +882,7 @@ export async function deterministicIntentResponse(prompt, preloadedContext, grou
           .map((doc) => ({ title: doc.title || "Documentation", href: doc.href, kind: doc.kind || "guide" }))
           .slice(0, 2)
       : [];
-  })();
+  })());
 
   // Supplementary "Learn more" links sourced from the qdrant/doc-search corpus:
   // high-confidence tutorials, validated designs, and API-docs pages — even on a
