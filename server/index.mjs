@@ -31,6 +31,7 @@ import {
   scrubUngroundedLinks,
   pruneLinklessLearnMore
 } from "./scenario-registry.mjs";
+import { ping as qdrantPing, qdrantUrl } from "./qdrant-client.mjs";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -504,10 +505,10 @@ app.get("/api/status", async (_req, res) => {
             : mcpRuntimeOk
               ? `HAL MCP online · ${toolCount} tools, ${capabilityCount} actions, ${skillsCount} skills${missingToolsNote}`
               : engineUnavailable
-                ? `HAL MCP online · ${toolCount} tools (lab runtime baseline unavailable: container engine offline)${missingToolsNote}`
+                ? `HAL MCP discovery only · ${toolCount} tools listed, but lab runtime is offline (container engine not running — start the lab to ground answers)${missingToolsNote}`
                 : baselineMessage
-                  ? `HAL MCP online · ${toolCount} tools (runtime baseline failed: ${baselineMessage})${missingToolsNote}`
-                  : `HAL MCP online · ${toolCount} tools (runtime baseline failed)${missingToolsNote}`,
+                  ? `HAL MCP discovery only · ${toolCount} tools listed, lab runtime baseline failed: ${baselineMessage}${missingToolsNote}`
+                  : `HAL MCP discovery only · ${toolCount} tools listed, lab runtime baseline unavailable${missingToolsNote}`,
           missingTools
         }
       },
@@ -842,6 +843,25 @@ if (fs.existsSync(distDir)) {
 // Kick off background corpus builds before the server is ready to serve traffic.
 // Loads any fresh on-disk corpus into memory immediately; stale ones rebuild async.
 initCorpus();
+
+// When the Qdrant RAG backend is selected, verify it is actually reachable at boot.
+// Otherwise retrieval silently degrades to the local BM25 corpus and the operator is
+// left wondering why answers feel different — make the outage loud and actionable.
+if (String(process.env.HAL_RAG_BACKEND || "local").toLowerCase() === "qdrant") {
+  qdrantPing()
+    .then((reachable) => {
+      if (reachable) {
+        console.log(`HAL Plus RAG backend: qdrant · ${qdrantUrl()} reachable`);
+      } else {
+        console.warn(
+          `⚠️  HAL_RAG_BACKEND=qdrant but Qdrant is unreachable at ${qdrantUrl()}.\n` +
+            "    Retrieval is falling back to the local BM25 corpus.\n" +
+            "    Start it with: npm run qdrant:up   (then: npm run push-to-qdrant to populate it)."
+        );
+      }
+    })
+    .catch(() => {});
+}
 
 app.listen(PORT, HOST, () => {
   console.log(`HAL Plus API running on http://${HOST}:${PORT}`);

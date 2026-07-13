@@ -18,7 +18,7 @@
     "corpus:crawl": "node scripts/crawl-corpus.mjs",
     "qdrant:export": "node scripts/export-qdrant-seed.mjs",
     "qdrant:build-image": "node scripts/build-qdrant-image.mjs",
-    "dev:qdrant": "HAL_RAG_BACKEND=qdrant npm run dev"
+    "dev:qdrant": "npm run qdrant:up && HAL_RAG_BACKEND=qdrant npm run dev"
   },
   "dependencies": {
     "concurrently": "^9.0.1",

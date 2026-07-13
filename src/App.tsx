@@ -45,7 +45,7 @@ type LiveStatus = {
   runtime: {
     loki: { ok: boolean; detail: string };
     llm: { ok: boolean; detail: string; model?: string; runtimeModel?: string; contextWindow?: number; keepAlive?: string };
-    halMcp: { ok: boolean; detail: string; missingTools?: string[]; url?: string };
+    halMcp: { ok: boolean; runtimeOk?: boolean; detail: string; missingTools?: string[]; url?: string };
   };
   products: HalProduct[];
 };
@@ -526,7 +526,18 @@ export default function App() {
         {
           id: "hal-mcp",
           label: "MCP",
-          state: liveStatus ? (liveStatus.runtime.halMcp.ok ? "ok" : "neutral") : "neutral",
+          // Two distinct signals: transport (`ok` = hal-mcp reachable + tools listed)
+          // and lab runtime (`runtimeOk` = live container baseline query succeeded).
+          // The transport answers tool/skill discovery even with the lab torn down, so
+          // a green chip on transport alone is misleading. Show amber ("warn") when
+          // discovery works but the runtime baseline is unavailable (lab not deployed).
+          state: liveStatus
+            ? liveStatus.runtime.halMcp.ok
+              ? liveStatus.runtime.halMcp.runtimeOk === false
+                ? "warn"
+                : "ok"
+              : "neutral"
+            : "neutral",
           detail: liveStatus?.runtime.halMcp.detail || "offline / no data",
           kind: "runtime"
         }
