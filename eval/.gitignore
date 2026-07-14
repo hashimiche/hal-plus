@@ -1,0 +1,3 @@
+# Generated test-set + scoring artifacts (regenerable via gen-testset.mjs).
+testset.json
+results*.json
