@@ -12,6 +12,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "start": "node server/index.mjs",
+    "test": "node --test",
     "qdrant:up": "podman compose -f docker-compose.qdrant.yml up -d && node scripts/wait-for-qdrant.mjs",
     "qdrant:down": "podman compose -f docker-compose.qdrant.yml down",
     "push-to-qdrant": "node scripts/push-to-qdrant.mjs",
